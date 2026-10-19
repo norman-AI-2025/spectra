@@ -1,0 +1,54 @@
+{
+  "manifest_version": 3,
+  "name": "Spectra - UM SPeCTRUM Companion",
+  "short_name": "Spectra",
+  "version": "1.0.2",
+  "description": "Smart companion for Universiti Malaya SPeCTRUM: instant Telegram alerts, prioritized deadline radar, and academic week pack bundler.",
+  "author": "Spectra Contributors",
+  "permissions": [
+    "cookies",
+    "storage",
+    "alarms",
+    "downloads",
+    "tabs",
+    "scripting",
+    "declarativeNetRequest"
+  ],
+  "host_permissions": [
+    "https://spectrum.um.edu.my/*",
+    "https://login.microsoftonline.com/*",
+    "https://api.telegram.org/*",
+    "https://ntfy.sh/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://spectrum.um.edu.my/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Spectra - SPeCTRUM Companion",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

@@ -1,0 +1,966 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=440, initial-scale=1.0">
+  <title>Spectra - UM SPeCTRUM Companion</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+
+<body class="spectra-body">
+  <div class="spectra-container">
+
+    <!-- Top Bar: Bento App Header -->
+    <header class="top-bar">
+      <div class="brand-group">
+        <div class="brand-icon">
+          <svg viewBox="0 0 32 32" width="22" height="22" fill="none">
+            <rect width="32" height="32" rx="8" fill="url(#brandGrad)" />
+            <polygon points="16,6 24,24 8,24" fill="rgba(255,255,255,0.15)" stroke="#FFFFFF" stroke-width="2"
+              stroke-linejoin="round" />
+            <path d="M10,20 L16,9 L22,20" stroke="#38BDF8" stroke-width="2" stroke-linecap="round" />
+            <circle cx="16" cy="14" r="2.5" fill="#FFFFFF" />
+            <defs>
+              <linearGradient id="brandGrad" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#4F46E5" />
+                <stop offset="1" stop-color="#7C3AED" />
+              </linearGradient>
+            </defs>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <div class="brand-title-row">
+            <h1 class="brand-title">Spectra</h1>
+            <span class="um-badge">UM</span>
+          </div>
+          <!-- Live User Profile / Status -->
+          <div class="user-identity-row">
+            <img id="userAvatar" class="user-avatar-mini hidden" alt="Student Profile Picture">
+            <span id="userName" class="brand-subtitle">Connecting to SPeCTRUM...</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="top-actions">
+        <!-- Live Session Indicator Pill -->
+        <div id="sessionPill" class="session-pill session-loading" title="Live SPeCTRUM session status">
+          <span class="session-dot"></span>
+          <span id="sessionStatusText" class="session-label">Checking...</span>
+        </div>
+
+        <!-- Sync / Refresh Button -->
+        <button id="refreshBtn" class="icon-btn" title="Refresh Live Data" aria-label="Refresh SPeCTRUM Data">
+          <svg viewBox="0 0 20 20" width="16" height="16" fill="currentColor">
+            <path fill-rule="evenodd"
+              d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z"
+              clip-rule="evenodd" />
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Navigation: Bento Segmented Tabs -->
+    <nav class="nav-segmented" role="tablist">
+      <button id="tabDeadlines" class="nav-tab active" role="tab" aria-selected="true" data-tab="deadlines">
+        <span class="tab-icon">⏰</span>
+        <span class="tab-label">Deadlines</span>
+        <span id="urgentBadge" class="tab-badge hidden">0</span>
+      </button>
+      <button id="tabAnnouncements" class="nav-tab" role="tab" aria-selected="false" data-tab="announcements">
+        <span class="tab-icon">📢</span>
+        <span class="tab-label">Notices</span>
+        <span id="announcementsBadge" class="tab-badge-accent hidden">0</span>
+      </button>
+      <button id="tabAttendance" class="nav-tab" role="tab" aria-selected="false" data-tab="attendance">
+        <span class="tab-icon">📋</span>
+        <span class="tab-label">Attendance</span>
+        <span id="attendanceBadge" class="tab-badge-accent hidden">0</span>
+      </button>
+      <button id="tabClassPrep" class="nav-tab" role="tab" aria-selected="false" data-tab="classPrep">
+        <span class="tab-icon">📦</span>
+        <span class="tab-label">Class Prep</span>
+        <span id="weekIndicatorBadge" class="tab-badge-accent">W1</span>
+      </button>
+      <button id="tabSettings" class="nav-tab" role="tab" aria-selected="false" data-tab="settings">
+        <span class="tab-icon">⚡</span>
+        <span class="tab-label">Relay</span>
+      </button>
+    </nav>
+
+    <!-- ============================================================== -->
+    <!-- DEDICATED SESSION DISCONNECTED OVERLAY / BANNER               -->
+    <!-- ============================================================== -->
+    <div id="sessionDisconnectedView" class="disconnected-view hidden">
+      <div class="disconnected-card">
+        <div class="disconnected-icon-wrap">
+          <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="#F43F5E" stroke-width="2">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+            <path d="M7 11V7a5 5 0 0110 0v4" />
+            <circle cx="12" cy="16" r="1.5" fill="#F43F5E" />
+          </svg>
+        </div>
+        <h2 class="disconnected-title">Connect to UM SPeCTRUM</h2>
+        <p class="disconnected-desc">
+          Spectra connects directly to your Universiti Malaya SPeCTRUM account. Please sign in via the portal to sync
+          your live deadlines, course materials, and announcements.
+        </p>
+
+        <!-- Live Diagnostics Box -->
+        <div class="diagnostic-box">
+          <div class="diag-row">
+            <span class="diag-label">SPeCTRUM Server:</span>
+            <span id="diagServerStatus" class="diag-val diag-ok">Online (spectrum.um.edu.my)</span>
+          </div>
+          <div class="diag-row">
+            <span class="diag-label">Login Method:</span>
+            <span class="diag-val">UM Microsoft 365 SSO</span>
+          </div>
+          <div class="diag-row">
+            <span class="diag-label">Session Status:</span>
+            <span id="diagSessionStatus" class="diag-val diag-warn">No Active Login Found</span>
+          </div>
+        </div>
+
+        <!-- Waiting for Login Status Box (shown when login tab is open) -->
+        <div id="loginWaitingBox" class="login-waiting-box hidden">
+          <div class="loading-spinner-sm"></div>
+          <div class="waiting-text">
+            <strong>Login tab opened!</strong>
+            <p>Please sign in with your <code>@siswa.um.edu.my</code> account in the opened tab. Spectra will
+              automatically connect as soon as authentication finishes.</p>
+          </div>
+        </div>
+
+        <div class="disconnected-actions">
+          <button id="openLoginTabBtn" class="btn-primary-action">
+            <svg viewBox="0 0 20 20" width="15" height="15" fill="currentColor">
+              <path fill-rule="evenodd"
+                d="M10 2a1 1 0 011 1v7.586l2.293-2.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 111.414-1.414L9 10.586V3a1 1 0 011-1z"
+                clip-rule="evenodd" />
+            </svg>
+            Sign In to SPeCTRUM &rarr;
+          </button>
+
+          <button id="recheckSessionBtn" class="btn-secondary-action btn-full">
+            Recheck Live Connection
+          </button>
+
+          <!-- Collapsible Manual Cookie / Token Option -->
+          <div class="manual-cookie-section">
+            <button type="button" id="toggleManualCookieBtn" class="link-subtle-toggle">
+              Or paste MoodleSession cookie manually &#9662;
+            </button>
+            <div id="manualCookieFields" class="manual-cookie-fields hidden">
+              <input type="text" id="manualCookieInput" placeholder="Paste MoodleSession cookie value"
+                class="bento-input">
+              <button id="saveManualCookieBtn" class="btn-secondary-action btn-full">
+                Connect with Cookie Value
+              </button>
+            </div>
+          </div>
+
+          <!-- Demo / Offline Preview Option -->
+          <button id="enableDemoPreviewBtn" class="link-demo-preview">
+            Preview with Sample UM Coursework (Demo Mode)
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main Content Container -->
+    <div id="mainContentContainer" class="main-content-flow">
+
+      <!-- ============================================================== -->
+      <!-- TAB 1: DEADLINES & RADAR                                       -->
+      <!-- ============================================================== -->
+      <main id="sectionDeadlines" class="tab-content active" role="tabpanel">
+        <!-- Search & Filter Bento Bar -->
+        <div class="bento-filter-card">
+          <div class="search-input-wrapper">
+            <svg class="search-icon" viewBox="0 0 20 20" width="15" height="15" fill="currentColor">
+              <path fill-rule="evenodd"
+                d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z"
+                clip-rule="evenodd" />
+            </svg>
+            <input type="text" id="deadlineSearch" placeholder="Search live assignments or course..."
+              autocomplete="off">
+            <button id="clearSearchBtn" class="clear-search hidden" aria-label="Clear Search">&times;</button>
+          </div>
+
+          <div class="filter-pills-row">
+            <button class="pill-btn active" data-filter="all">All (<span id="countAll">0</span>)</button>
+            <button class="pill-btn filter-urgent" data-filter="urgent">🔴 &lt;24h (<span
+                id="countUrgent">0</span>)</button>
+            <button class="pill-btn filter-week" data-filter="this_week">🟡 This Week (<span
+                id="countWeek">0</span>)</button>
+            <button class="pill-btn" data-filter="upcoming">🟢 Later (<span id="countLater">0</span>)</button>
+            <button class="pill-btn" data-filter="completed">✅ Done (<span id="countDone">0</span>)</button>
+          </div>
+        </div>
+
+        <!-- Urgent Deadline Alert Banner (displayed if <24h items exist) -->
+        <div id="urgentDeadlineBanner" class="urgent-banner hidden">
+          <div class="urgent-banner-icon">
+            <span class="pulse-ring"></span>
+            <span class="urgent-dot"></span>
+          </div>
+          <div class="urgent-banner-text">
+            <p class="urgent-banner-title">Impending Submissions</p>
+            <p id="urgentBannerDetail" class="urgent-banner-subtitle">You have assignments due within 24 hours.</p>
+          </div>
+        </div>
+
+        <!-- Inline Session Notice Card (Shown when unauthenticated / unset / expired) -->
+        <div id="sessionNoticeDeadlines" class="session-notice-card hidden">
+          <div class="notice-icon-box">
+            <svg viewBox="0 0 20 20" width="18" height="18" fill="currentColor">
+              <path fill-rule="evenodd"
+                d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z"
+                clip-rule="evenodd" />
+            </svg>
+          </div>
+          <div class="notice-text-wrap">
+            <p class="notice-card-msg">Please provide your MoodleSession cookie in Settings to load courses.</p>
+          </div>
+          <button id="jump-to-settings-btn" class="btn-secondary-action btn-sm jump-to-settings-btn">
+            Go to Settings &rarr;
+          </button>
+        </div>
+
+        <!-- Live Loading Skeleton -->
+        <div id="deadlinesLoading" class="loading-state hidden">
+          <div class="loading-spinner"></div>
+          <p class="loading-label">Querying SPeCTRUM calendar API...</p>
+        </div>
+
+        <!-- Deadlines List Container -->
+        <div id="deadlinesList" class="deadlines-container">
+          <!-- Rendered dynamically from live Moodle calendar -->
+        </div>
+
+        <!-- Empty State -->
+        <div id="deadlinesEmptyState" class="empty-state hidden">
+          <div class="empty-icon-wrap">
+            <svg viewBox="0 0 48 48" width="40" height="40" fill="none">
+              <circle cx="24" cy="24" r="22" fill="#ECFDF5" stroke="#10B981" stroke-width="2" />
+              <path d="M15 24L21 30L33 18" stroke="#059669" stroke-width="3.5" stroke-linecap="round"
+                stroke-linejoin="round" />
+            </svg>
+          </div>
+          <h3 class="empty-title">All Caught Up!</h3>
+          <p id="emptyStateMessage" class="empty-desc">No impending submission dropboxes found on your SPeCTRUM
+            calendar.</p>
+        </div>
+      </main>
+
+      <!-- ============================================================== -->
+      <!-- TAB 2: COURSE ANNOUNCEMENTS                                   -->
+      <!-- ============================================================== -->
+      <main id="sectionAnnouncements" class="tab-content" role="tabpanel">
+        <!-- Announcements Bento Header with Subject Dropdown -->
+        <div class="bento-card bento-filter-card">
+          <div class="card-icon-title">
+            <div class="service-icon announcements-icon">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                  d="M11 5.882V19.24a1.76 1.76 0 01-3.417.592l-2.147-6.15M18 13a3 3 0 100-6M5.436 13.683A4.001 4.001 0 017 6h1.832c4.1 0 7.625-1.234 9.168-3v14c-1.543-1.766-5.067-3-9.168-3H7a3.988 3.988 0 01-1.564-.317z" />
+              </svg>
+            </div>
+            <div style="flex: 1;">
+              <div class="flex-between">
+                <h3 class="card-title">Course Notices</h3>
+                <span id="announcementsTotalCountBadge" class="tag-badge">0 Notices</span>
+              </div>
+              <p class="card-subtitle">Official announcements from course instructors</p>
+            </div>
+          </div>
+
+          <!-- Subject Dropdown Filter -->
+          <div class="form-group" style="margin-top: 6px;">
+            <label for="announcementSubjectSelect" class="form-label flex-between">
+              <span>Filter by Course Subject</span>
+              <span id="announcementSubjectHint" class="field-hint">All Courses</span>
+            </label>
+            <div class="select-wrapper">
+              <select id="announcementSubjectSelect" class="bento-select">
+                <option value="all">📚 All Enrolled Subjects</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- Inline Session Notice Card (Shown when unauthenticated / unset / expired) -->
+        <div id="sessionNoticeAnnouncements" class="session-notice-card hidden">
+          <div class="notice-icon-box">
+            <svg viewBox="0 0 20 20" width="18" height="18" fill="currentColor">
+              <path fill-rule="evenodd"
+                d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z"
+                clip-rule="evenodd" />
+            </svg>
+          </div>
+          <div class="notice-text-wrap">
+            <p class="notice-card-msg">Please connect your SPeCTRUM account in Settings to view course notices.</p>
+          </div>
+          <button class="btn-secondary-action btn-sm jump-to-settings-btn">
+            Go to Settings &rarr;
+          </button>
+        </div>
+
+        <!-- Live Loading Skeleton -->
+        <div id="announcementsLoading" class="loading-state hidden">
+          <div class="loading-spinner"></div>
+          <p class="loading-label">Querying SPeCTRUM course forums...</p>
+        </div>
+
+        <!-- Empty State -->
+        <div id="announcementsEmptyState" class="empty-state hidden">
+          <div class="empty-icon-wrap">
+            <svg viewBox="0 0 48 48" width="40" height="40" fill="none">
+              <circle cx="24" cy="24" r="22" fill="#EEF2FF" stroke="#6366F1" stroke-width="2" />
+              <path d="M16 20h16M16 26h10M16 32h14" stroke="#4F46E5" stroke-width="2.5" stroke-linecap="round" />
+            </svg>
+          </div>
+          <h3 class="empty-title">No Notices Found</h3>
+          <p id="emptyAnnouncementsMsg" class="empty-desc">No forum announcements found for this subject filter.</p>
+          <button id="refreshAnnouncementsBtn" class="btn-secondary-action btn-sm" style="margin-top: 8px;">
+            Check SPeCTRUM Forums
+          </button>
+        </div>
+
+        <!-- Live Announcements List Container -->
+        <div id="announcementsList" class="announcements-container"></div>
+      </main>
+
+      <!-- ============================================================== -->
+      <!-- TAB 3: ATTENDANCE & AUTO-CHECKIN                              -->
+      <!-- ============================================================== -->
+      <main id="sectionAttendance" class="tab-content" role="tabpanel">
+        <!-- Attendance Bento Header & Rate Summary -->
+        <div class="bento-card bento-filter-card">
+          <div class="card-icon-title">
+            <div class="service-icon attendance-icon">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                  d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+              </svg>
+            </div>
+            <div style="flex: 1;">
+              <div class="flex-between">
+                <h3 class="card-title">Live Attendance Tracker</h3>
+                <span id="attendanceOverallRateBadge" class="tag-badge tag-badge-success">100.0% Rate</span>
+              </div>
+              <p class="card-subtitle">Auto-checkin engine &amp; SPeCTRUM occurrence records</p>
+            </div>
+          </div>
+
+          <!-- Overall Stats Metrics Grid -->
+          <div class="attendance-metrics-grid">
+            <div class="metric-card metric-rate">
+              <span class="metric-val" id="attendanceOverallRate">--%</span>
+              <span class="metric-lbl">Overall Attendance</span>
+            </div>
+            <div class="metric-card metric-present">
+              <span class="metric-val text-emerald" id="attendancePresentCount">0</span>
+              <span class="metric-lbl">Present ✅</span>
+            </div>
+            <div class="metric-card metric-late">
+              <span class="metric-val text-amber" id="attendanceLateCount">0</span>
+              <span class="metric-lbl">Late 🟡</span>
+            </div>
+            <div class="metric-card metric-absent">
+              <span class="metric-val text-rose" id="attendanceAbsentCount">0</span>
+              <span class="metric-lbl">Absent ❌</span>
+            </div>
+          </div>
+
+          <div class="attendance-action-bar flex-between" style="margin-top: 10px;">
+            <div class="flex-align-center" style="gap: 6px;">
+              <label class="switch switch-sm">
+                <input type="checkbox" id="autoAttendanceToggle" checked>
+                <span class="slider round"></span>
+              </label>
+              <span class="toggle-desc-inline" id="autoAttendanceToggleLabel">Auto-Checkin Active</span>
+            </div>
+            <div class="flex-align-center" style="gap: 6px;">
+              <a id="openSpectrumHeaderBtn" href="https://spectrum.um.edu.my/my/" target="_blank" rel="noopener noreferrer" class="btn-secondary-action btn-sm open-ext-link" title="Open SPeCTRUM in new tab">
+                Open SPeCTRUM ↗
+              </a>
+              <button id="scanAttendanceBtn" class="btn-secondary-action btn-sm">
+                <svg viewBox="0 0 20 20" width="13" height="13" fill="currentColor">
+                  <path fill-rule="evenodd"
+                    d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z"
+                    clip-rule="evenodd" />
+                </svg>
+                Scan Now
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Live Open Attendance Banner (Displayed when active session is open for check-in) -->
+        <div id="openAttendanceBanner" class="open-attendance-banner hidden">
+          <div class="open-banner-icon-wrap">
+            <span class="pulse-ring"></span>
+            <span class="open-banner-dot"></span>
+          </div>
+          <div style="flex: 1;">
+            <div class="flex-between">
+              <span id="openAttendanceCourseCode" class="open-banner-tag">WIX2002</span>
+              <span id="openAttendanceTimeBadge" class="open-banner-time">OPEN NOW</span>
+            </div>
+            <h4 id="openAttendanceTitle" class="open-banner-title">Lecture Session Check-In Open</h4>
+            <p id="openAttendanceDesc" class="open-banner-subtitle">Matches your configured occurrence. Ready for instant submission.</p>
+
+            <div id="openAttendancePasswordWrap" class="open-password-wrap hidden" style="margin-top: 8px;">
+              <input type="text" id="openAttendancePasswordInput" placeholder="Enter session password from lecturer..." class="bento-input input-sm">
+            </div>
+
+            <div class="open-banner-actions flex-align-center" style="margin-top: 8px; gap: 8px;">
+              <button id="submitOpenAttendanceBtn" class="btn-primary-action btn-sm">
+                Submit Attendance (Present) &rarr;
+              </button>
+              <a id="openAttendancePageLink" href="https://spectrum.um.edu.my/mod/attendance/view.php" target="_blank" rel="noopener noreferrer" class="btn-secondary-action btn-sm open-attendance-ext-btn open-ext-link">
+                Open Attendance Page ↗
+              </a>
+            </div>
+          </div>
+        </div>
+
+        <!-- Occurrence Configuration Bento Card -->
+        <div class="bento-card">
+          <div class="flex-between">
+            <div>
+              <h4 class="card-section-title">Course Occurrence Setup</h4>
+              <p class="card-subtitle">Assign your enrolled occurrence (e.g. Occ 1, Occ 2) per subject</p>
+            </div>
+            <button id="toggleOccurrenceSetupBtn" class="btn-ghost-sm" aria-label="Toggle Occurrence Form">
+              <span id="occurrenceSetupToggleText">Edit Occurrences ⚙️</span>
+            </button>
+          </div>
+
+          <!-- Occurrence Config Form -->
+          <div id="occurrenceConfigForm" class="occurrence-config-form margin-top-sm">
+            <div class="form-group">
+              <label for="occurrenceCourseSelect" class="form-label">Select Course</label>
+              <div class="select-wrapper">
+                <select id="occurrenceCourseSelect" class="bento-select select-sm">
+                  <option value="">Loading courses...</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label for="occurrenceInput" class="form-label flex-between">
+                <span>Occurrence / Group</span>
+                <span id="currentCourseOccLabel" class="field-hint">Not Set</span>
+              </label>
+              <input type="text" id="occurrenceInput" placeholder="e.g. Occ 1, Occ 2, Group 1" class="bento-input input-sm">
+
+              <!-- Quick Occurrence Suggestion Pills -->
+              <div class="occurrence-pills-row">
+                <button type="button" class="occ-pill-btn" data-occ="Occ 1">Occ 1</button>
+                <button type="button" class="occ-pill-btn" data-occ="Occ 2">Occ 2</button>
+                <button type="button" class="occ-pill-btn" data-occ="Occ 3">Occ 3</button>
+                <button type="button" class="occ-pill-btn" data-occ="Occ 4">Occ 4</button>
+                <button type="button" class="occ-pill-btn" data-occ="Occ 5">Occ 5</button>
+                <button type="button" class="occ-pill-btn" data-occ="All">All</button>
+              </div>
+            </div>
+
+            <div class="action-btn-row">
+              <button id="saveOccurrenceBtn" class="btn-primary-action btn-sm">
+                Save Occurrence
+              </button>
+            </div>
+          </div>
+
+          <!-- Active Occurrence Badges List -->
+          <div id="activeOccurrencesList" class="active-occurrences-chips-row margin-top-xs">
+            <!-- Rendered dynamically e.g. [WIX2002: Occ 1] [WIX3001: Occ 2] -->
+          </div>
+        </div>
+
+        <!-- Subject Attendance Records & History View -->
+        <div class="bento-card">
+          <div class="flex-between">
+            <div class="flex-align-center" style="gap: 8px;">
+              <h4 class="card-section-title" style="margin: 0;">Attendance Records</h4>
+              <span id="attendanceSessionsCountBadge" class="field-hint">0 Sessions</span>
+            </div>
+            <a id="openCourseAttendancePageBtn" href="https://spectrum.um.edu.my/my/" target="_blank" rel="noopener noreferrer" class="btn-secondary-action btn-sm open-ext-link" title="Open attendance page on SPeCTRUM">
+              Open Attendance Page ↗
+            </a>
+          </div>
+
+          <!-- Subject Filter Dropdown -->
+          <div class="form-group margin-top-xs">
+            <label for="attendanceSubjectSelect" class="form-label flex-between">
+              <span>View Records For</span>
+              <span id="selectedSubjectOccBadge" class="field-hint">All Occurrences</span>
+            </label>
+            <div class="select-wrapper">
+              <select id="attendanceSubjectSelect" class="bento-select select-sm">
+                <option value="all">📚 All Enrolled Subjects</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Selected Subject Summary Bar -->
+          <div id="subjectAttendanceStatsBar" class="subject-stats-bar hidden">
+            <div class="flex-between">
+              <span id="subjectStatsCourseName" class="subject-stats-title">WIX2002</span>
+              <span id="subjectStatsRate" class="subject-stats-pct">100.0%</span>
+            </div>
+            <div class="progress-bar-wrap">
+              <div id="subjectStatsProgressBar" class="progress-bar-fill" style="width: 100%;"></div>
+            </div>
+            <div class="flex-between text-muted" style="font-size: 11px; margin-top: 4px;">
+              <span id="subjectStatsDetail">12 of 12 Sessions Recorded</span>
+              <span id="subjectStatsPoints">24 / 24 pts</span>
+            </div>
+          </div>
+
+          <!-- Sessions Timeline / List Container -->
+          <div id="attendanceSessionsList" class="attendance-sessions-list margin-top-sm">
+            <!-- Rendered dynamically -->
+          </div>
+        </div>
+
+        <!-- Inline Session Notice Card (Shown when unauthenticated / unset / expired) -->
+        <div id="sessionNoticeAttendance" class="session-notice-card hidden">
+          <div class="notice-icon-box">
+            <svg viewBox="0 0 20 20" width="18" height="18" fill="currentColor">
+              <path fill-rule="evenodd"
+                d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z"
+                clip-rule="evenodd" />
+            </svg>
+          </div>
+          <div class="notice-text-wrap">
+            <p class="notice-card-msg">Please connect your SPeCTRUM account in Settings to view attendance records.</p>
+          </div>
+          <button class="btn-secondary-action btn-sm jump-to-settings-btn">
+            Go to Settings &rarr;
+          </button>
+        </div>
+
+        <!-- Live Loading Skeleton -->
+        <div id="attendanceLoading" class="loading-state hidden">
+          <div class="loading-spinner"></div>
+          <p class="loading-label">Querying SPeCTRUM attendance modules...</p>
+        </div>
+
+        <!-- Empty State -->
+        <div id="attendanceEmptyState" class="empty-state hidden">
+          <div class="empty-icon-wrap">
+            <svg viewBox="0 0 48 48" width="40" height="40" fill="none">
+              <circle cx="24" cy="24" r="22" fill="#ECFDF5" stroke="#10B981" stroke-width="2" />
+              <path d="M15 24L21 30L33 18" stroke="#059669" stroke-width="3.5" stroke-linecap="round"
+                stroke-linejoin="round" />
+            </svg>
+          </div>
+          <h3 class="empty-title">No Attendance Sessions Found</h3>
+          <p id="emptyAttendanceMsg" class="empty-desc">No attendance records or open check-in sessions found on SPeCTRUM.</p>
+          <button id="refreshAttendanceBtn" class="btn-secondary-action btn-sm" style="margin-top: 8px;">
+            Check SPeCTRUM Attendance
+          </button>
+        </div>
+      </main>
+
+      <!-- ============================================================== -->
+      <!-- TAB 4: CLASS PREP & MATERIAL BUNDLER                          -->
+      <!-- ============================================================== -->
+      <main id="sectionClassPrep" class="tab-content" role="tabpanel">
+        <!-- Inline Session Notice Card (Shown when unauthenticated / unset / expired) -->
+        <div id="sessionNoticeClassPrep" class="session-notice-card hidden">
+          <div class="notice-icon-box">
+            <svg viewBox="0 0 20 20" width="18" height="18" fill="currentColor">
+              <path fill-rule="evenodd"
+                d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z"
+                clip-rule="evenodd" />
+            </svg>
+          </div>
+          <div class="notice-text-wrap">
+            <p class="notice-card-msg">Please provide your MoodleSession cookie in Settings to load courses.</p>
+          </div>
+          <button class="btn-secondary-action btn-sm jump-to-settings-btn">
+            Go to Settings &rarr;
+          </button>
+        </div>
+
+        <!-- Live Course Selector Bento Card -->
+        <div class="bento-card course-selector-card">
+          <div class="card-header-compact">
+            <label for="courseSelect" class="input-label-sm">ENROLLED COURSE</label>
+            <span id="detectedCoursesBadge" class="badge-subtle">0 Courses</span>
+          </div>
+          <select id="courseSelect" class="bento-select">
+            <option value="">Loading courses from SPeCTRUM...</option>
+          </select>
+        </div>
+
+        <!-- Academic Week Selector -->
+        <div class="week-selector-card">
+          <div class="week-selector-header">
+            <div class="week-title-wrap">
+              <span class="section-kicker">ACADEMIC TIMELINE</span>
+              <h2 id="currentWeekTitle" class="week-current-heading">Week Materials</h2>
+            </div>
+            <span id="academicWeekTag" class="week-status-pill">Active Week</span>
+          </div>
+
+          <!-- Scrollable Week Pills -->
+          <div id="weekPillsRow" class="week-pills-row">
+            <!-- Populated dynamically (Week 1 through Week 14) -->
+          </div>
+        </div>
+
+        <!-- One-Click "Download Week Pack" Bento Card -->
+        <div class="bento-card download-pack-card">
+          <div class="pack-details">
+            <div class="pack-icon-box">
+              <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="#6366F1" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                  d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+              </svg>
+            </div>
+            <div class="pack-info">
+              <h3 class="pack-title">One-Click Week Pack</h3>
+              <p id="packFolderPreview" class="pack-path">Downloads/Spectra/Course/Week/</p>
+              <div class="pack-tags">
+                <span id="packSlidesCount" class="pack-chip">📖 0 Slides</span>
+                <span id="packTutCount" class="pack-chip">📝 0 Tutorials</span>
+                <span id="packLabCount" class="pack-chip">💻 0 Labs</span>
+              </div>
+            </div>
+          </div>
+
+          <button id="downloadWeekPackBtn" class="btn-primary-action">
+            <svg viewBox="0 0 20 20" width="16" height="16" fill="currentColor">
+              <path fill-rule="evenodd"
+                d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z"
+                clip-rule="evenodd" />
+            </svg>
+            <span id="downloadBtnText">Download Week Pack (<span id="packTotalFiles">0</span> files)</span>
+          </button>
+
+          <!-- Download Progress Bar -->
+          <div id="downloadProgressContainer" class="download-progress-box hidden">
+            <div class="progress-bar-bg">
+              <div id="downloadProgressBar" class="progress-bar-fill" style="width: 0%;"></div>
+            </div>
+            <div class="progress-labels">
+              <span id="downloadProgressStatus">Saving to Downloads folder...</span>
+              <span id="downloadProgressPercent">0%</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Live Loading Skeleton for Materials -->
+        <div id="materialsLoading" class="loading-state hidden">
+          <div class="loading-spinner"></div>
+          <p class="loading-label">Parsing course materials from SPeCTRUM...</p>
+        </div>
+
+        <!-- Categorized Course Module Files -->
+        <div id="materialsContainer" class="materials-sections-container">
+          <!-- Category: Lecture Notes & Slides -->
+          <section class="material-group">
+            <div class="material-group-header">
+              <span class="group-title-icon">📖</span>
+              <h4 class="group-title">Lecture Notes &amp; Slides</h4>
+              <span id="slidesCountBadge" class="group-badge">0</span>
+            </div>
+            <div id="slidesList" class="material-items-list">
+              <!-- Rendered from live course HTML -->
+            </div>
+          </section>
+
+          <!-- Category: Tutorials -->
+          <section class="material-group">
+            <div class="material-group-header">
+              <span class="group-title-icon">📝</span>
+              <h4 class="group-title">Tutorials &amp; Worksheets</h4>
+              <span id="tutCountBadge" class="group-badge">0</span>
+            </div>
+            <div id="tutorialsList" class="material-items-list">
+              <!-- Rendered from live course HTML -->
+            </div>
+          </section>
+
+          <!-- Category: Labs & Practicals -->
+          <section class="material-group">
+            <div class="material-group-header">
+              <span class="group-title-icon">💻</span>
+              <h4 class="group-title">Labs &amp; Practicals</h4>
+              <span id="labsCountBadge" class="group-badge">0</span>
+            </div>
+            <div id="labsList" class="material-items-list">
+              <!-- Rendered from live course HTML -->
+            </div>
+          </section>
+        </div>
+      </main>
+
+      <!-- ============================================================== -->
+      <!-- TAB 3: PHONE RELAY & PIPELINE SETTINGS                        -->
+      <!-- ============================================================== -->
+      <main id="sectionSettings" class="tab-content" role="tabpanel">
+
+        <!-- SPeCTRUM Session Authentication Card -->
+        <div class="bento-card auth-settings-card">
+          <div class="session-card-header">
+            <span class="section-kicker">SESSION AUTHENTICATION</span>
+            <span id="cookieStatusLabel" class="status-indicator-badge hidden">Unset</span>
+          </div>
+          <h3 class="card-title">SPeCTRUM Session Authentication</h3>
+          <p class="card-subtitle">Connect your active MoodleSession token or auto-detect from browser cookies to sync
+            live coursework and deadlines.</p>
+
+          <div class="form-group margin-top-sm">
+            <label for="moodle-session-input" class="form-label">
+              MoodleSession Cookie Token
+              <span class="field-hint">From SPeCTRUM DevTools (F12 &gt; Application &gt; Cookies)</span>
+            </label>
+            <div class="password-input-wrapper">
+              <input type="password" id="moodle-session-input" placeholder="e.g. uhe4fg1agh90g925grgtk22ob0"
+                class="bento-input font-mono" autocomplete="off" spellcheck="false">
+              <button type="button" id="toggle-moodle-session-visibility" class="btn-input-icon"
+                title="Toggle visibility" aria-label="Toggle token visibility">
+                👁️
+              </button>
+            </div>
+          </div>
+
+          <!-- Live Status Indicator Badge below input -->
+          <div class="session-status-row">
+            <span class="status-indicator-label">Verification Status:</span>
+            <span id="session-status-badge" class="session-status-badge status-unset">⚪ Unset</span>
+          </div>
+
+          <!-- Buttons -->
+          <div class="auth-buttons-grid">
+            <button type="button" id="save-session-btn" class="btn-primary-action">
+              <svg viewBox="0 0 20 20" width="14" height="14" fill="currentColor">
+                <path fill-rule="evenodd"
+                  d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
+                  clip-rule="evenodd" />
+              </svg>
+              <span>Save &amp; Test Connection</span>
+            </button>
+            <button type="button" id="auto-detect-btn" class="btn-secondary-action">
+              <svg viewBox="0 0 20 20" width="14" height="14" fill="currentColor">
+                <path fill-rule="evenodd"
+                  d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z"
+                  clip-rule="evenodd" />
+              </svg>
+              <span>Auto-Detect Session</span>
+            </button>
+          </div>
+
+          <!-- Live Session Metadata Preview -->
+          <div class="session-detail-row margin-top-sm">
+            <div class="session-info-item">
+              <span class="info-label">Domain</span>
+              <span class="info-value">spectrum.um.edu.my</span>
+            </div>
+            <div class="session-info-item">
+              <span class="info-label">CSRF Sesskey</span>
+              <span id="sesskeyDisplay" class="info-value font-mono">Unverified</span>
+            </div>
+            <div class="session-info-item">
+              <span class="info-label">Student</span>
+              <span id="studentNameDisplay" class="info-value">Not connected</span>
+            </div>
+          </div>
+
+          <div class="session-actions-row">
+            <a href="https://spectrum.um.edu.my/login/index.php" target="_blank" class="link-btn-subtle">
+              Open SPeCTRUM in Browser &rarr;
+            </a>
+          </div>
+        </div>
+
+        <!-- Telegram Bot Pipeline Bento Card -->
+        <div class="bento-card settings-card">
+          <div class="card-icon-title">
+            <div class="service-icon telegram-icon">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
+                <path
+                  d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 00-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.75-.55 2.92-1.27 4.86-2.11 5.83-2.51 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .36z" />
+              </svg>
+            </div>
+            <div>
+              <h3 class="card-title">Telegram Bot Pipeline</h3>
+              <p class="card-subtitle">Instant push alerts for live announcements &amp; &lt;24h deadlines</p>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="telegramToken" class="form-label">
+              Bot Token
+              <span class="field-hint">From @BotFather</span>
+            </label>
+            <div class="password-input-wrapper">
+              <input type="password" id="telegramToken" placeholder="123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ"
+                class="bento-input">
+              <button type="button" id="toggleTokenVisibility" class="btn-input-icon" title="Toggle visibility"
+                aria-label="Toggle token visibility">
+                👁️
+              </button>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="telegramChatId" class="form-label">
+              Your Chat ID
+              <span class="field-hint">Check @userinfobot</span>
+            </label>
+            <input type="text" id="telegramChatId" placeholder="e.g. 987654321 or @yourchannel" class="bento-input">
+          </div>
+
+          <div class="action-btn-row flex-between">
+            <button id="testTelegramBtn" class="btn-secondary-action">
+              <svg viewBox="0 0 20 20" width="14" height="14" fill="currentColor">
+                <path
+                  d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" />
+              </svg>
+              Send Test Telegram
+            </button>
+            <span class="field-hint" id="telegramSentSummaryLabel" style="font-size: 11px;">
+              Flagged: <b id="tgSentNoticesCount">0</b> notices, <b id="tgSentDeadlinesCount">0</b> deadlines
+            </span>
+          </div>
+        </div>
+
+        <!-- Alternative Webhook / ntfy.sh Bento Card -->
+        <div class="bento-card settings-card">
+          <div class="card-icon-title">
+            <div class="service-icon ntfy-icon">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                  d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+              </svg>
+            </div>
+            <div>
+              <h3 class="card-title">ntfy.sh Mobile Push</h3>
+              <p class="card-subtitle">Zero-setup phone notifications without a bot</p>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="ntfyTopic" class="form-label">
+              ntfy Topic Name
+              <span class="field-hint">Subscribe via ntfy mobile app</span>
+            </label>
+            <div class="prefix-input-wrap">
+              <span class="prefix-text">ntfy.sh/</span>
+              <input type="text" id="ntfyTopic" placeholder="um_spectra_student_key" class="bento-input input-prefixed">
+            </div>
+          </div>
+
+          <div class="action-btn-row">
+            <button id="testNtfyBtn" class="btn-secondary-action">
+              Send Test ntfy Alert
+            </button>
+          </div>
+        </div>
+
+        <!-- Cloud Relay Sync Card -->
+        <div class="bento-card settings-card">
+          <div class="card-icon-title">
+            <div class="service-icon cloud-icon">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                  d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 00-9.78 2.096A4.001 4.001 0 003 15z" />
+              </svg>
+            </div>
+            <div>
+              <h3 class="card-title">24/7 Cloud Relay Sync</h3>
+              <p class="card-subtitle">Sync active MoodleSession to external worker when browser is closed</p>
+            </div>
+          </div>
+
+          <div class="setting-toggle-row">
+            <div>
+              <span class="toggle-title">Enable Cloud Relay Sync</span>
+              <p class="toggle-desc">Automatically pushes session token to worker on change</p>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="cloudRelayToggle">
+              <span class="slider round"></span>
+            </label>
+          </div>
+
+          <div id="cloudRelayFields" class="nested-form-fields hidden">
+            <div class="form-group">
+              <label for="cloudRelayUrl" class="form-label">Worker / Lambda Endpoint</label>
+              <input type="url" id="cloudRelayUrl" placeholder="https://spectra-relay.workers.dev/sync"
+                class="bento-input">
+            </div>
+
+            <div class="form-group">
+              <label for="cloudRelaySecret" class="form-label">Bearer Secret Token</label>
+              <input type="password" id="cloudRelaySecret" placeholder="worker-auth-secret-key" class="bento-input">
+            </div>
+
+            <div class="action-btn-row">
+              <button id="syncCloudNowBtn" class="btn-secondary-action">
+                Sync Session Now
+              </button>
+              <span id="lastCloudSyncLabel" class="sync-timestamp-hint">Never synced</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Notification Preferences & Frequency -->
+        <div class="bento-card settings-card">
+          <h3 class="card-title">Alert Preferences</h3>
+
+          <div class="checkbox-row">
+            <label class="checkbox-container">
+              <input type="checkbox" id="prefAnnouncements" checked>
+              <span class="checkmark"></span>
+              <span class="checkbox-label">Course Announcement Alerts</span>
+            </label>
+          </div>
+
+          <div class="checkbox-row">
+            <label class="checkbox-container">
+              <input type="checkbox" id="prefDeadlines" checked>
+              <span class="checkmark"></span>
+              <span class="checkbox-label">Urgent Deadline Reminders (&lt; 24h)</span>
+            </label>
+          </div>
+
+          <div class="form-group margin-top-sm">
+            <label for="pollIntervalSelect" class="form-label">Background Polling Frequency</label>
+            <select id="pollIntervalSelect" class="bento-select">
+              <option value="15">Every 15 Minutes (Recommended)</option>
+              <option value="30">Every 30 Minutes</option>
+              <option value="60">Every 60 Minutes</option>
+            </select>
+          </div>
+
+          <div class="save-actions-row">
+            <button id="saveSettingsBtn" class="btn-primary-action btn-full">
+              Save Relay Settings
+            </button>
+          </div>
+        </div>
+
+      </main>
+    </div>
+
+    <!-- Floating Feedback Toast -->
+    <div id="feedbackToast" class="feedback-toast hidden">
+      <span id="toastIcon" class="toast-icon">✓</span>
+      <span id="toastMsg" class="toast-message">Notification sent successfully!</span>
+    </div>
+
+  </div>
+
+  <script type="module" src="popup.js"></script>
+</body>
+
+</html>
