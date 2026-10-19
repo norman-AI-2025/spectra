@@ -11,7 +11,10 @@ import {
   fetchLiveAnnouncements,
   injectAndScrapeSpectrum,
   setupDeclarativeCookieRule,
-  AuthExpiredError
+  injectCookieToBrowser,
+  AuthExpiredError,
+  InvalidSessionError,
+  AuthRequiredError
 } from "./utils/moodleApi.js";
 
 import { fetchLiveDeadlines } from "./utils/calendar.js";
@@ -76,6 +79,39 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   await checkActiveSession();
 });
 
+// -------------------------------------------------------------
+// Browser Startup Listener (Persistent Re-Injection on Chrome Boot)
+// -------------------------------------------------------------
+chrome.runtime.onStartup.addListener(async () => {
+  console.log("[Spectra] Chrome browser launched. Restoring session state...");
+
+  try {
+    const stored = await chrome.storage.local.get([
+      "manualMoodleSession",
+      "manual_moodle_session",
+      "moodle_session",
+      "poll_interval_mins"
+    ]);
+
+    const token = (
+      stored.manualMoodleSession ||
+      stored.manual_moodle_session ||
+      (stored.moodle_session && typeof stored.moodle_session === "object" ? stored.moodle_session.value : stored.moodle_session) ||
+      ""
+    ).trim();
+
+    if (token) {
+      await injectCookieToBrowser(token);
+      await setupDeclarativeCookieRule(token);
+      console.log("[Spectra] Persistent MoodleSession re-injected on Chrome boot.");
+    }
+
+    await setupAlarms(stored.poll_interval_mins || 15);
+  } catch (err) {
+    console.warn("[Spectra] onStartup initialization notice:", err);
+  }
+});
+
 // Setup periodic alarms
 async function setupAlarms(intervalMinutes = 15) {
   await chrome.alarms.clearAll();
@@ -118,18 +154,27 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 // Cookie Listener (MoodleSession on spectrum.um.edu.my)
 // -------------------------------------------------------------
 chrome.cookies.onChanged.addListener(async (changeInfo) => {
-  const { cookie, removed } = changeInfo;
+  const { cookie, removed, cause } = changeInfo;
   if (!cookie.domain.includes("spectrum.um.edu.my") || cookie.name !== COOKIE_NAME) {
     return;
   }
 
   if (removed) {
-    console.log("[Spectra] MoodleSession cookie cleared.");
-    await chrome.storage.local.set({
-      moodle_session: null,
-      moodle_session_valid: false,
-      moodle_session_updated: Date.now()
-    });
+    console.log(`[Spectra] MoodleSession cookie removed (cause: ${cause}). Checking persisted backup...`);
+    // Check if manualMoodleSession is saved in chrome.storage.local
+    const stored = await chrome.storage.local.get(["manualMoodleSession", "manual_moodle_session"]);
+    const manualToken = (stored.manualMoodleSession || stored.manual_moodle_session || "").trim();
+
+    if (manualToken) {
+      // Re-inject the persistent cookie backup so Chrome doesn't lose it on quit
+      console.log("[Spectra] Re-injecting manual session backup after cookie removal.");
+      await injectCookieToBrowser(manualToken);
+    } else if (cause === "explicit") {
+      await chrome.storage.local.set({
+        moodle_session_valid: false,
+        moodle_session_updated: Date.now()
+      });
+    }
     return;
   }
 
@@ -145,9 +190,15 @@ chrome.cookies.onChanged.addListener(async (changeInfo) => {
 
   await chrome.storage.local.set({
     moodle_session: sessionData,
+    manualMoodleSession: cookie.value,
     moodle_session_valid: true,
     moodle_session_updated: Date.now()
   });
+
+  // Ensure persistent expiration if missing
+  if (!cookie.expirationDate) {
+    await injectCookieToBrowser(cookie.value);
+  }
 
   // Trigger Cloud Relay Sync if enabled
   const config = await chrome.storage.local.get(["cloud_relay_enabled", "cloud_relay_url", "cloud_relay_secret"]);
@@ -168,7 +219,7 @@ async function checkActiveSession() {
     });
 
     const sessionData = {
-      value: cookie ? cookie.value : "",
+      value: cookie ? cookie.value : (session.cookieValue || ""),
       sesskey: session.sesskey,
       userName: session.userName,
       userAvatarUrl: session.userAvatarUrl,
@@ -177,18 +228,28 @@ async function checkActiveSession() {
 
     await chrome.storage.local.set({
       moodle_session: sessionData,
+      manualMoodleSession: sessionData.value || cookie?.value || "",
       moodle_session_valid: true,
       moodle_session_updated: Date.now()
     });
 
     return { authenticated: true, session: sessionData };
   } catch (err) {
-    await chrome.storage.local.set({
-      moodle_session: null,
-      moodle_session_valid: false,
-      moodle_session_updated: Date.now()
-    });
-    return { authenticated: false, session: null };
+    const isExplicitAuthFailure =
+      err instanceof AuthRequiredError ||
+      err instanceof InvalidSessionError ||
+      err.message?.includes("Redirected to UM login") ||
+      err.message?.includes("unauthenticated state");
+
+    if (isExplicitAuthFailure) {
+      await chrome.storage.local.set({
+        moodle_session_valid: false,
+        moodle_session_updated: Date.now()
+      });
+    } else {
+      console.warn("[Spectra] Non-fatal network notice during checkActiveSession:", err.message);
+    }
+    return { authenticated: false, session: null, error: err.message };
   }
 }
 

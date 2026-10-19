@@ -270,7 +270,12 @@
             <div style="flex: 1;">
               <div class="flex-between">
                 <h3 class="card-title">Course Notices</h3>
-                <span id="announcementsTotalCountBadge" class="tag-badge">0 Notices</span>
+                <div class="flex-align-center" style="gap: 6px;">
+                  <button id="sendAllUnsentNoticesBtn" class="btn-secondary-action btn-xs" title="Send all unflagged notices to Telegram">
+                    <span>🚩 Send Unsent</span>
+                  </button>
+                  <span id="announcementsTotalCountBadge" class="tag-badge">0 Notices</span>
+                </div>
               </div>
               <p class="card-subtitle">Official announcements from course instructors</p>
             </div>
@@ -504,6 +509,14 @@
                 <option value="all">📚 All Enrolled Subjects</option>
               </select>
             </div>
+          </div>
+
+          <!-- Time Period Sub-Filters (Past | This Week | Today | All) -->
+          <div id="attendanceTimeFiltersRow" class="attendance-time-filters flex-align-center margin-top-xs">
+            <button type="button" class="btn-time-filter active-filter" data-time-filter="all">All</button>
+            <button type="button" class="btn-time-filter" data-time-filter="past">Past</button>
+            <button type="button" class="btn-time-filter" data-time-filter="this_week">This Week</button>
+            <button type="button" class="btn-time-filter" data-time-filter="today">Today</button>
           </div>
 
           <!-- Selected Subject Summary Bar -->

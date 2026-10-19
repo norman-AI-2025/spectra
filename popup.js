@@ -31,11 +31,14 @@ import {
   extractCourseCode,
   calculateUrgency,
   isRespectiveOccurrence,
-  isAttendanceSessionPastOrCurrent
+  isAttendanceSessionPastOrCurrent,
+  parseAttendanceSessionDate
 } from "./utils/parser.js";
 
 import {
+  sendTelegramMessage,
   sendTelegramTestMessage,
+  formatAnnouncementTelegram,
   sanitizeTelegramToken,
   sanitizeTelegramChatId
 } from "./utils/telegram.js";
@@ -62,6 +65,7 @@ const state = {
   attendance: null,
   courseOccurrences: {},
   selectedAttendanceSubject: "all",
+  attendanceTimeFilter: "all",
   autoAttendanceEnabled: true,
   telegramSentAnnouncementIds: new Set(),
   telegramSentDeadlineIds: new Set(),
@@ -403,6 +407,78 @@ function initDOMListeners() {
   document.getElementById("testNtfyBtn").addEventListener("click", handleTestNtfy);
   document.getElementById("syncCloudNowBtn").addEventListener("click", handleManualCloudSync);
   document.getElementById("saveSettingsBtn").addEventListener("click", handleSaveSettings);
+
+  // Attendance Time Filters: Past | This Week | Today | All
+  document.querySelectorAll(".btn-time-filter").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".btn-time-filter").forEach((b) => b.classList.remove("active-filter"));
+      btn.classList.add("active-filter");
+      state.attendanceTimeFilter = btn.dataset.timeFilter || "all";
+      renderAttendanceRecords();
+    });
+  });
+
+  // Announcements: Send All Unsent Notices Button
+  const sendUnsentBtn = document.getElementById("sendAllUnsentNoticesBtn");
+  if (sendUnsentBtn) {
+    sendUnsentBtn.addEventListener("click", handleSendAllUnsentNotices);
+  }
+
+  // Announcements: Single Notice Card Delegation for Send Button
+  const annContainer = document.getElementById("announcementsList");
+  if (annContainer) {
+    annContainer.addEventListener("click", async (e) => {
+      const sendBtn = e.target.closest(".btn-send-tg-notice");
+      if (sendBtn) {
+        const annId = sendBtn.dataset.annId;
+        await handleSendSingleNoticeToTelegram(annId, sendBtn);
+      }
+    });
+  }
+
+  // Auto-Save Settings inputs on change & blur so changes are never lost if popup closes
+  const autoSaveInput = (id, storageKey, sanitizer) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const save = async () => {
+      let val = el.value.trim();
+      if (sanitizer) {
+        val = sanitizer(val);
+        el.value = val;
+      }
+      await chrome.storage.local.set({ [storageKey]: val });
+    };
+    el.addEventListener("change", save);
+    el.addEventListener("blur", save);
+  };
+
+  autoSaveInput("telegramToken", "telegram_bot_token", sanitizeTelegramToken);
+  autoSaveInput("telegramChatId", "telegram_chat_id", sanitizeTelegramChatId);
+  autoSaveInput("ntfyTopic", "ntfy_topic");
+  autoSaveInput("cloudRelayUrl", "cloud_relay_url");
+  autoSaveInput("cloudRelaySecret", "cloud_relay_secret");
+
+  const pollIntervalEl = document.getElementById("pollIntervalSelect");
+  if (pollIntervalEl) {
+    pollIntervalEl.addEventListener("change", async () => {
+      const mins = parseInt(pollIntervalEl.value, 10) || 15;
+      await chrome.storage.local.set({ poll_interval_mins: mins });
+      chrome.runtime.sendMessage({ action: "UPDATE_ALARMS", payload: { intervalMinutes: mins } });
+    });
+  }
+
+  const sessionInputEl = document.getElementById("moodle-session-input");
+  if (sessionInputEl) {
+    const saveSession = async () => {
+      const val = sessionInputEl.value.trim();
+      if (val) {
+        await chrome.storage.local.set({ manualMoodleSession: val });
+        await injectCookieToBrowser(val);
+      }
+    };
+    sessionInputEl.addEventListener("change", saveSession);
+    sessionInputEl.addEventListener("blur", saveSession);
+  }
 }
 
 function switchTab(tabName) {
@@ -1055,7 +1131,20 @@ async function syncLiveSession() {
     await loadLiveAnnouncements();
 
   } catch (err) {
-    console.warn("[Spectra] Live session authentication check:", err);
+    console.warn("[Spectra] Live session authentication check notice:", err);
+
+    const hasCachedData = (state.deadlines && state.deadlines.length > 0) ||
+                          (state.courses && state.courses.length > 0) ||
+                          (state.announcements && state.announcements.length > 0) ||
+                          Boolean(manualToken);
+
+    if (hasCachedData) {
+      // PRESERVE ALL USER DATA! DO NOT WIPE THE UI ON TRANSIENT ERRORS!
+      updateSessionIndicator("connected", "Saved Session (Cached)");
+      updateAuthStatusBadge("connected");
+      return;
+    }
+
     state.isAuthenticated = false;
     state.sesskey = null;
 
@@ -1447,6 +1536,7 @@ function renderAnnouncements() {
   const countBadge = document.getElementById("announcementsTotalCountBadge");
   const navBadge = document.getElementById("announcementsBadge");
   const hintEl = document.getElementById("announcementSubjectHint");
+  const sendUnsentBtn = document.getElementById("sendAllUnsentNoticesBtn");
 
   if (!container) return;
   container.innerHTML = "";
@@ -1473,6 +1563,17 @@ function renderAnnouncements() {
     }
   }
 
+  // Update Send Unsent button state
+  if (sendUnsentBtn) {
+    const unflagged = state.announcements.filter((a) => !state.telegramSentAnnouncementIds.has(String(a.id)) && !a.telegramSent);
+    if (unflagged.length > 0) {
+      sendUnsentBtn.classList.remove("hidden");
+      sendUnsentBtn.innerHTML = `<span>🚩 Send Unsent (${unflagged.length})</span>`;
+    } else {
+      sendUnsentBtn.classList.add("hidden");
+    }
+  }
+
   if (filtered.length === 0) {
     if (emptyState) {
       emptyState.classList.remove("hidden");
@@ -1493,19 +1594,26 @@ function renderAnnouncements() {
     card.className = "announcement-card";
 
     const isTgSent = state.telegramSentAnnouncementIds.has(String(item.id)) || item.telegramSent;
-    const tgSentBadge = isTgSent ? `<span class="telegram-sent-tag" title="Notice flagged as sent to Telegram">✈️ Telegram Sent</span>` : "";
+
+    // STRICT REQUIREMENT: Show small flagged icon on the right with "Sent" word for sent notices;
+    // or provide Send action for notices that haven't been flagged yet.
+    const flagActionOrBadge = isTgSent
+      ? `<span class="tg-flag-badge tg-flag-sent" title="Flagged: Already sent to Telegram"><span class="tg-flag-icon">🚩</span><span class="tg-flag-text">Sent</span></span>`
+      : `<button type="button" class="btn-send-tg-notice" data-ann-id="${escapeHtml(item.id)}" title="Send notice to Telegram and flag as sent"><span>🚩 Send</span></button>`;
 
     card.innerHTML = `
-      <div class="announcement-card-header">
+      <div class="announcement-card-header flex-between">
         <div class="flex-align-center" style="gap: 6px;">
-          <span class="announcement-course-pill">${item.courseCode || "UM"}</span>
-          ${tgSentBadge}
+          <span class="announcement-course-pill">${escapeHtml(item.courseCode || "UM")}</span>
         </div>
-        <span class="announcement-date-text">🕒 ${item.date || "Recent"}</span>
+        <div class="flex-align-center" style="gap: 8px;">
+          <span class="announcement-date-text">🕒 ${escapeHtml(item.date || "Recent")}</span>
+          ${flagActionOrBadge}
+        </div>
       </div>
-      <h4 class="announcement-subject-title">${item.subject}</h4>
+      <h4 class="announcement-subject-title">${escapeHtml(item.subject)}</h4>
       <div class="announcement-footer">
-        <span class="announcement-author-info">👤 ${item.author || "Course Instructor"}</span>
+        <span class="announcement-author-info">👤 ${escapeHtml(item.author || "Course Instructor")}</span>
         <a href="${item.url || 'https://spectrum.um.edu.my/'}" target="_blank" rel="noopener noreferrer" class="announcement-link-btn">
           Open Notice &rarr;
         </a>
@@ -1514,6 +1622,119 @@ function renderAnnouncements() {
 
     container.appendChild(card);
   });
+}
+
+/**
+ * Sends a single unflagged announcement to Telegram and flags it
+ */
+async function handleSendSingleNoticeToTelegram(annId, btnEl) {
+  if (!annId) return;
+  const ann = state.announcements.find((a) => String(a.id) === String(annId));
+  if (!ann) return;
+
+  const stored = await chrome.storage.local.get(["telegram_bot_token", "telegram_chat_id"]);
+  const botToken = stored.telegram_bot_token;
+  const chatId = stored.telegram_chat_id;
+
+  if (!botToken || !chatId) {
+    showToast("Please configure Telegram Bot Token and Chat ID in Settings first", "error");
+    jumpToSettingsTab();
+    return;
+  }
+
+  const origHtml = btnEl ? btnEl.innerHTML : "";
+  if (btnEl) {
+    btnEl.disabled = true;
+    btnEl.innerHTML = "<span>Sending...</span>";
+  }
+
+  try {
+    const telegramHtml = formatAnnouncementTelegram(ann);
+    const res = await sendTelegramMessage(botToken, chatId, telegramHtml);
+    if (res && (res.ok || res.message_id)) {
+      state.telegramSentAnnouncementIds.add(String(annId));
+      ann.telegramSent = true;
+
+      await chrome.storage.local.set({
+        telegram_sent_announcement_ids: Array.from(state.telegramSentAnnouncementIds)
+      });
+
+      const tgNoticesCountEl = document.getElementById("tgSentNoticesCount");
+      if (tgNoticesCountEl) tgNoticesCountEl.textContent = String(state.telegramSentAnnouncementIds.size);
+
+      renderAnnouncements();
+      showToast(`Flagged & sent "${ann.subject}" to Telegram!`, "success");
+    } else {
+      throw new Error("Telegram API rejected dispatch");
+    }
+  } catch (err) {
+    console.error("[Spectra] Sending notice to Telegram failed:", err);
+    showToast(`Failed: ${err.message}`, "error");
+    if (btnEl) {
+      btnEl.disabled = false;
+      btnEl.innerHTML = origHtml;
+    }
+  }
+}
+
+/**
+ * Sends all unflagged announcements to Telegram and flags them all
+ */
+async function handleSendAllUnsentNotices() {
+  const stored = await chrome.storage.local.get(["telegram_bot_token", "telegram_chat_id"]);
+  const botToken = stored.telegram_bot_token;
+  const chatId = stored.telegram_chat_id;
+
+  if (!botToken || !chatId) {
+    showToast("Please configure Telegram Bot Token and Chat ID in Settings first", "error");
+    jumpToSettingsTab();
+    return;
+  }
+
+  const unflagged = state.announcements.filter((a) => !state.telegramSentAnnouncementIds.has(String(a.id)) && !a.telegramSent);
+
+  if (unflagged.length === 0) {
+    showToast("All notices are already flagged & sent to Telegram!", "info");
+    return;
+  }
+
+  const btn = document.getElementById("sendAllUnsentNoticesBtn");
+  const origHtml = btn ? btn.innerHTML : "";
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = "<span>Sending...</span>";
+  }
+
+  let sentCount = 0;
+  for (const item of unflagged) {
+    try {
+      const telegramHtml = formatAnnouncementTelegram(item);
+      const res = await sendTelegramMessage(botToken, chatId, telegramHtml);
+      if (res && (res.ok || res.message_id)) {
+        state.telegramSentAnnouncementIds.add(String(item.id));
+        item.telegramSent = true;
+        sentCount++;
+      }
+    } catch (err) {
+      console.warn(`[Spectra] Could not send notice ${item.id}:`, err);
+    }
+  }
+
+  await chrome.storage.local.set({
+    telegram_sent_announcement_ids: Array.from(state.telegramSentAnnouncementIds)
+  });
+
+  const tgNoticesCountEl = document.getElementById("tgSentNoticesCount");
+  if (tgNoticesCountEl) tgNoticesCountEl.textContent = String(state.telegramSentAnnouncementIds.size);
+
+  renderAnnouncements();
+
+  if (btn) {
+    btn.disabled = false;
+    btn.innerHTML = origHtml;
+  }
+
+  showToast(`Sent and flagged ${sentCount} notice${sentCount === 1 ? "" : "s"} to Telegram!`, "success");
 }
 
 // ===================================================================
@@ -1799,8 +2020,10 @@ function renderAttendanceRecords() {
     }
   }
 
-  // Handle selected subject stats bar
+  // Handle selected subject stats bar vs time filter row
+  const timeFiltersRow = document.getElementById("attendanceTimeFiltersRow");
   if (selected !== "all" && targetCourses.length > 0) {
+    if (timeFiltersRow) timeFiltersRow.classList.add("hidden");
     const courseRecord = targetCourses[0];
     if (statsBar) {
       statsBar.classList.remove("hidden");
@@ -1821,16 +2044,35 @@ function renderAttendanceRecords() {
     }
   } else {
     if (statsBar) statsBar.classList.add("hidden");
+    if (timeFiltersRow) timeFiltersRow.classList.remove("hidden");
   }
 
   // Flatten sessions with courseViewUrl (STRICT: only show attendance from first session till current date)
   const allSessions = [];
+  const now = new Date();
+  const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999).getTime();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0).getTime();
+
+  // Calculate Monday 00:00:00 of current calendar week
+  const day = now.getDay(); // 0 is Sunday
+  const diffToMonday = (day === 0 ? -6 : 1) - day;
+  const monday = new Date(now);
+  monday.setDate(now.getDate() + diffToMonday);
+  monday.setHours(0, 0, 0, 0);
+  const startOfThisWeek = monday.getTime();
+
   targetCourses.forEach((c) => {
     const cViewUrl = c.viewUrl || (c.cmid ? `https://spectrum.um.edu.my/mod/attendance/view.php?id=${c.cmid}` : `https://spectrum.um.edu.my/course/view.php?id=${c.courseId}`);
     (c.sessions || []).forEach((s) => {
+      const ts = s.timestamp || parseAttendanceSessionDate(s.date, s.time);
+      // STRICT REQUIREMENT: Only show attendance from first session till current date attendance
+      if (ts && ts > endOfToday && s.status !== "open") {
+        return; // Exclude future unrecorded sessions beyond today
+      }
       if (s.isPastOrCurrent !== false && isAttendanceSessionPastOrCurrent(s.date, s.time, s.status)) {
         allSessions.push({
           ...s,
+          timestamp: ts,
           courseCode: c.courseCode,
           courseId: c.courseId,
           courseViewUrl: cViewUrl
@@ -1839,18 +2081,56 @@ function renderAttendanceRecords() {
     });
   });
 
-  if (countBadge) {
-    countBadge.textContent = `${allSessions.length} Session${allSessions.length === 1 ? "" : "s"}`;
+  // Apply Sub-Filters: Past | This Week | Today | All (when viewing all enrolled subjects)
+  let displayedSessions = allSessions;
+  if (selected === "all") {
+    const timeFilter = state.attendanceTimeFilter || "all";
+    if (timeFilter === "today") {
+      displayedSessions = allSessions.filter((s) => {
+        if (s.status === "open") return true;
+        if (!s.timestamp) return false;
+        return s.timestamp >= startOfToday && s.timestamp <= endOfToday;
+      });
+    } else if (timeFilter === "this_week") {
+      displayedSessions = allSessions.filter((s) => {
+        if (s.status === "open") return true;
+        if (!s.timestamp) return false;
+        return s.timestamp >= startOfThisWeek && s.timestamp <= endOfToday;
+      });
+    } else if (timeFilter === "past") {
+      displayedSessions = allSessions.filter((s) => {
+        if (s.status === "open") return false;
+        if (!s.timestamp) return true;
+        return s.timestamp < startOfThisWeek;
+      });
+    }
+
+    // Reflect active state on time filter buttons
+    document.querySelectorAll(".btn-time-filter").forEach((btn) => {
+      btn.classList.toggle("active-filter", (btn.dataset.timeFilter || "all") === timeFilter);
+    });
   }
 
-  if (allSessions.length === 0) {
-    if (emptyState) emptyState.classList.remove("hidden");
+  if (countBadge) {
+    countBadge.textContent = `${displayedSessions.length} Session${displayedSessions.length === 1 ? "" : "s"}`;
+  }
+
+  if (displayedSessions.length === 0) {
+    if (emptyState) {
+      emptyState.classList.remove("hidden");
+      const emptyMsg = document.getElementById("emptyAttendanceMsg");
+      if (emptyMsg) {
+        emptyMsg.textContent = timeFilter === "all"
+          ? "No attendance sessions found up to the current date."
+          : `No ${timeFilter.replace("_", " ")} attendance records found.`;
+      }
+    }
     return;
   }
 
   if (emptyState) emptyState.classList.add("hidden");
 
-  allSessions.forEach((s) => {
+  displayedSessions.forEach((s) => {
     const card = document.createElement("div");
     card.className = `attendance-session-card ${s.status === "open" ? "session-open" : ""}`;
 
@@ -2594,6 +2874,19 @@ async function loadStoredPreferences() {
   let stored = {};
   if (typeof chrome !== "undefined" && chrome.storage?.local) {
     stored = await chrome.storage.local.get([
+      "manualMoodleSession",
+      "manual_moodle_session",
+      "moodle_session",
+      "userName",
+      "userAvatarUrl",
+      "userId",
+      "verifiedSesskey",
+      "cached_courses",
+      "cached_raw_courses",
+      "cached_deadlines",
+      "cached_raw_events",
+      "cached_announcements",
+      "cached_attendance",
       "telegram_bot_token",
       "telegram_chat_id",
       "ntfy_topic",
@@ -2613,6 +2906,43 @@ async function loadStoredPreferences() {
     ]);
   }
 
+  // 1. Restore Student Profile Metadata
+  if (stored.userName) {
+    state.userName = stored.userName;
+    state.userAvatarUrl = stored.userAvatarUrl || "";
+    updateUserIdentityUI(stored.userName, stored.userAvatarUrl || "");
+    const studentDisplay = document.getElementById("studentNameDisplay");
+    if (studentDisplay) studentDisplay.textContent = stored.userName;
+  }
+  if (stored.verifiedSesskey) {
+    state.sesskey = stored.verifiedSesskey;
+    const sesskeyEl = document.getElementById("sesskeyDisplay");
+    if (sesskeyEl) sesskeyEl.textContent = `${stored.verifiedSesskey.substring(0, 5)}••••••`;
+  }
+
+  // 2. Restore MoodleSession token
+  const token = (
+    stored.manualMoodleSession ||
+    stored.manual_moodle_session ||
+    (stored.moodle_session && typeof stored.moodle_session === "object" ? stored.moodle_session.value : stored.moodle_session) ||
+    ""
+  ).trim();
+
+  const moodleInput = document.getElementById("moodle-session-input");
+  if (moodleInput && token) {
+    moodleInput.value = token;
+  }
+
+  if (token) {
+    state.isAuthenticated = true;
+    updateSessionIndicator("connected", "Connected");
+    updateAuthStatusBadge("connected");
+    updateInlineNoticeCards(true);
+    setDisconnectedViewState(false);
+    injectCookieToBrowser(token);
+  }
+
+  // 3. Restore Sent Telegram Flags
   if (Array.isArray(stored.telegram_sent_announcement_ids)) {
     state.telegramSentAnnouncementIds = new Set(stored.telegram_sent_announcement_ids.map(String));
   }
@@ -2625,9 +2955,39 @@ async function loadStoredPreferences() {
   if (tgNoticesCountEl) tgNoticesCountEl.textContent = String(state.telegramSentAnnouncementIds.size);
   if (tgDeadlinesCountEl) tgDeadlinesCountEl.textContent = String(state.telegramSentDeadlineIds.size);
 
+  // 4. Restore Course Occurrences
   if (stored.course_occurrences && typeof stored.course_occurrences === "object") {
     state.courseOccurrences = stored.course_occurrences;
+    renderActiveOccurrenceBadges();
   }
+
+  // 5. Restore Cached Courses
+  if (Array.isArray(stored.cached_courses) && stored.cached_courses.length > 0) {
+    await hydrateCoursesFromScrape(stored.cached_courses, stored.cached_raw_courses);
+    populateAttendanceCourseDropdowns();
+  }
+
+  // 6. Restore Cached Deadlines
+  if ((stored.cached_deadlines && stored.cached_deadlines.length > 0) || (stored.cached_raw_events && stored.cached_raw_events.length > 0)) {
+    hydrateDeadlinesFromScrape(stored.cached_deadlines, stored.cached_raw_events);
+  }
+
+  // 7. Restore Cached Announcements
+  if (Array.isArray(stored.cached_announcements) && stored.cached_announcements.length > 0) {
+    state.announcements = stored.cached_announcements;
+    populateAnnouncementSubjectDropdown();
+    renderAnnouncements();
+  }
+
+  // 8. Restore Cached Attendance
+  if (stored.cached_attendance && stored.cached_attendance.courses?.length > 0) {
+    state.attendance = stored.cached_attendance;
+    populateAttendanceCourseDropdowns();
+    renderAttendanceSummaryMetrics();
+    renderAttendanceRecords();
+  }
+
+  // 9. Restore Relay & Notification Settings
   if (stored.pref_auto_attendance !== undefined) {
     state.autoAttendanceEnabled = stored.pref_auto_attendance;
     const attToggle = document.getElementById("autoAttendanceToggle");

@@ -2542,6 +2542,92 @@ input:checked + .slider:before {
   white-space: nowrap;
 }
 
+/* Telegram Sent Flag Badge & Action Buttons */
+.tg-flag-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 9999px;
+  white-space: nowrap;
+  letter-spacing: 0.2px;
+}
+
+.tg-flag-sent {
+  background: #FEF2F2;
+  color: #DC2626;
+  border: 1px solid #FECACA;
+  box-shadow: 0 1px 2px rgba(220, 38, 38, 0.08);
+}
+
+.tg-flag-icon {
+  font-size: 11px;
+  line-height: 1;
+}
+
+.btn-send-tg-notice {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 2.5px 8px;
+  border-radius: var(--radius-sm);
+  background: #EFF6FF;
+  color: #1D4ED8;
+  border: 1px solid #BFDBFE;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.btn-send-tg-notice:hover {
+  background: #DBEAFE;
+  color: #1E40AF;
+  border-color: #93C5FD;
+}
+
+.btn-send-tg-notice:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Attendance Time Filter Buttons (Past | This Week | Today | All) */
+.attendance-time-filters {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  overflow-x: auto;
+}
+
+.btn-time-filter {
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 9999px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-card);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  white-space: nowrap;
+}
+
+.btn-time-filter:hover {
+  background: var(--bg-card-hover);
+  color: var(--text-primary);
+  border-color: var(--border-color-focus);
+}
+
+.btn-time-filter.active-filter {
+  background: var(--primary);
+  color: #ffffff;
+  border-color: var(--primary);
+  box-shadow: 0 1px 3px rgba(37, 99, 235, 0.25);
+}
+
 
 
 
