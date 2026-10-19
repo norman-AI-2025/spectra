@@ -540,47 +540,61 @@ export function calculateAcademicWeek(semesterStartDateStr = null) {
 /**
  * Matches a session's group/type string against a student's configured occurrence
  */
-export function matchesOccurrence(sessionGroup, studentOccurrence) {
-  return isRespectiveOccurrence(sessionGroup, studentOccurrence);
+export function matchesOccurrence(sessionGroup, studentOccurrence, sessionDescription = "") {
+  return isRespectiveOccurrence(sessionGroup, studentOccurrence, sessionDescription);
 }
 
 /**
  * Strict occurrence checker:
  * Ensures attendance is only filled/recorded for the student's respective occurrence.
  * - Universal groups ("All students", "Semua pelajar", empty) match everyone.
- * - If session specifies a group (e.g. "Occ 1", "Occ 2"), student must have configured that exact occurrence.
+ * - If session specifies a group (e.g. "Occ 1", "Occ 2") or mentions it in description, student must have configured that exact occurrence.
  * - If student has NOT configured an occurrence, group-specific sessions will NOT match.
  */
-export function isRespectiveOccurrence(sessionGroup, studentOccurrence) {
+export function isRespectiveOccurrence(sessionGroup, studentOccurrence, sessionDescription = "") {
   const group = (sessionGroup || "").trim().toLowerCase();
+  const desc = (sessionDescription || "").trim().toLowerCase();
   const occ = (studentOccurrence || "").trim().toLowerCase();
 
-  // Universal groups apply to all students regardless of occurrence
-  if (!group || group.includes("all students") || group.includes("semua pelajar") || group === "all") {
-    return true;
-  }
-
-  // If session specifies a specific occurrence group, student MUST have configured a matching occurrence
-  if (!occ) {
-    return false;
-  }
-
+  // If student occurrence is 'all', matches everything
   if (occ === "all") {
     return true;
   }
 
+  // Detect if group or description specifies a specific occurrence or group number
+  const groupIsUniversal = !group || group.includes("all students") || group.includes("semua pelajar") || group === "all";
+  const descHasOcc = desc && (/\bocc(?:urrence)?\s*\d+\b/i.test(desc) || /\bkumpulan\s*\d+\b/i.test(desc) || /\bgroup\s*\d+\b/i.test(desc));
+
+  // Determine target text for occurrence extraction
+  let targetText = "";
+  if (!groupIsUniversal) {
+    targetText = group;
+  } else if (descHasOcc) {
+    targetText = desc;
+  }
+
+  // Universal session (no specific group or occurrence in group or description)
+  if (!targetText) {
+    return true;
+  }
+
+  // Session is group-specific, but student has not configured an occurrence
+  if (!occ) {
+    return false;
+  }
+
   // Extract primary occurrence/group number if present (e.g. Occ 1 vs Occ 11, Occ 2 vs Occ 1)
   const occDigits = occ.match(/\b\d+\b/) || occ.match(/\d+/);
-  const groupDigits = group.match(/\b\d+\b/) || group.match(/\d+/);
+  const textDigits = targetText.match(/\b\d+\b/) || targetText.match(/\d+/);
 
-  if (occDigits && groupDigits) {
-    return occDigits[0] === groupDigits[0];
+  if (occDigits && textDigits) {
+    return occDigits[0] === textDigits[0];
   }
 
   // If no numbers, require word boundary match
   const safeOcc = occ.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const regex = new RegExp(`\\b${safeOcc}\\b`, "i");
-  return regex.test(group);
+  return regex.test(targetText);
 }
 
 /**
@@ -771,7 +785,7 @@ export function parseAttendanceView(html, studentOccurrence = "", referenceDate 
           statusLabel = "Excused";
         }
 
-        const isMatch = matchesOccurrence(groupText, studentOccurrence);
+        const isMatch = matchesOccurrence(groupText, studentOccurrence, descText);
         const sessionTs = parseAttendanceSessionDate(dateText, timeText);
         const isPastOrCurrent = isAttendanceSessionPastOrCurrent(dateText, timeText, status, referenceDate);
 
@@ -867,7 +881,7 @@ export function parseAttendanceView(html, studentOccurrence = "", referenceDate 
         statusLabel = "Excused";
       }
 
-      const isMatch = matchesOccurrence(groupText, studentOccurrence);
+      const isMatch = matchesOccurrence(groupText, studentOccurrence, descText);
       const sessionTs = parseAttendanceSessionDate(dateText, timeText);
       const isPastOrCurrent = isAttendanceSessionPastOrCurrent(dateText, timeText, status, referenceDate);
 
@@ -904,8 +918,11 @@ export function parseAttendanceView(html, studentOccurrence = "", referenceDate 
   const pastOrCurrentSessions = sessions.filter((s) => s.isPastOrCurrent);
 
   // Calculate detailed counts based on student's occurrence
-  const relevantSessions = pastOrCurrentSessions.filter((s) => s.matchesOccurrence);
-  const targetSessions = relevantSessions.length > 0 ? relevantSessions : pastOrCurrentSessions;
+  const isOccSpecified = Boolean(studentOccurrence && studentOccurrence.trim().toLowerCase() !== "all");
+  const relevantSessions = isOccSpecified
+    ? pastOrCurrentSessions.filter((s) => s.matchesOccurrence)
+    : pastOrCurrentSessions;
+  const targetSessions = relevantSessions;
 
   let present = 0, absent = 0, late = 0, excused = 0, unrecorded = 0;
   let openSession = null;
@@ -922,7 +939,7 @@ export function parseAttendanceView(html, studentOccurrence = "", referenceDate 
 
   // STRICT REQUIREMENT: Only select openSession if the session is genuinely OPEN and matches the respective occurrence!
   for (const s of pastOrCurrentSessions) {
-    if (s.status === "open" && s.submitUrl && isRespectiveOccurrence(s.group, studentOccurrence)) {
+    if (s.status === "open" && s.submitUrl && isRespectiveOccurrence(s.group, studentOccurrence, s.description)) {
       openSession = s;
       break;
     }

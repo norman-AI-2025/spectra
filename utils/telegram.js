@@ -105,7 +105,13 @@ export async function sendTelegramMessage(botToken, chatId, messageHtml, options
     const data = await res.json();
 
     if (data.ok) {
-      return { success: true, messageId: data.result?.message_id, data };
+      return {
+        success: true,
+        ok: true,
+        messageId: data.result?.message_id,
+        message_id: data.result?.message_id,
+        data
+      };
     }
 
     // Inspect error response
@@ -126,7 +132,13 @@ export async function sendTelegramMessage(botToken, chatId, messageHtml, options
       });
       const fallbackData = await fallbackRes.json();
       if (fallbackData.ok) {
-        return { success: true, messageId: fallbackData.result?.message_id, data: fallbackData };
+        return {
+          success: true,
+          ok: true,
+          messageId: fallbackData.result?.message_id,
+          message_id: fallbackData.result?.message_id,
+          data: fallbackData
+        };
       }
     }
 
@@ -197,7 +209,7 @@ export function formatAnnouncementTelegram(announcement) {
 }
 
 /**
- * Format urgent deadline for Telegram push alert (<24h)
+ * Format submission due date reminder for Telegram push alert (due in 1 day / <24h)
  */
 export function formatDeadlineTelegram(deadline) {
   const code = escapeHtml(deadline.courseCode || "Course");
@@ -206,10 +218,15 @@ export function formatDeadlineTelegram(deadline) {
   const formattedTime = escapeHtml(deadline.formattedTime || "Soon");
   const url = deadline.url || "https://spectrum.um.edu.my/calendar/view.php";
 
+  const isOneDayExact = hoursLeft >= 23 && hoursLeft <= 25;
+  const urgencyText = isOneDayExact
+    ? "🔴 Due in exactly 1 day (24 hours)!"
+    : `🔴 Due in ~${hoursLeft} hour${hoursLeft === 1 ? "" : "s"}!`;
+
   return [
-    `⏰ <b>Spectra Deadline Radar: ${code}</b>`,
+    `⏰ <b>Spectra Due Date Reminder: ${code}</b>`,
     `<b>Assignment:</b> ${title}`,
-    `<b>Urgency:</b> 🔴 Due in ~${hoursLeft} hour${hoursLeft === 1 ? "" : "s"}!`,
+    `<b>Urgency:</b> ${urgencyText}`,
     `<b>Due Date:</b> ${formattedTime}`,
     ``,
     `<a href="${url}">👉 Open Submission Dropbox on SPeCTRUM</a>`

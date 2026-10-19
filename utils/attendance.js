@@ -121,6 +121,12 @@ export async function fetchCourseAttendance({ courseId, courseCode = "UM", sessk
   const viewHtml = await viewRes.text();
   const parsed = parseAttendanceView(viewHtml, occurrence, referenceDate);
 
+  // STRICT REQUIREMENT: Only include attendance sessions according to occurrence for each subject
+  const isOccSpecified = Boolean(occurrence && occurrence.trim().toLowerCase() !== "all");
+  const filteredSessions = isOccSpecified
+    ? parsed.sessions.filter((s) => s.matchesOccurrence || isRespectiveOccurrence(s.group, occurrence, s.description))
+    : parsed.sessions;
+
   return {
     courseId,
     courseCode,
@@ -129,7 +135,7 @@ export async function fetchCourseAttendance({ courseId, courseCode = "UM", sessk
     viewUrl,
     occurrence,
     summary: parsed.summary,
-    sessions: parsed.sessions,
+    sessions: filteredSessions,
     hasOpenSession: parsed.hasOpenSession,
     openSession: parsed.openSession
   };
@@ -235,6 +241,7 @@ export async function autoSubmitAttendance({
   attendanceUrl,
   password = "",
   sessionGroup,
+  sessionDescription = "",
   studentOccurrence,
   isOpen
 }) {
@@ -246,7 +253,7 @@ export async function autoSubmitAttendance({
     };
   }
 
-  if (sessionGroup !== undefined && studentOccurrence !== undefined && !isRespectiveOccurrence(sessionGroup, studentOccurrence)) {
+  if (sessionGroup !== undefined && studentOccurrence !== undefined && !isRespectiveOccurrence(sessionGroup, studentOccurrence, sessionDescription)) {
     return {
       success: false,
       error: `Session group (${sessionGroup || "Group"}) does not match your enrolled occurrence (${studentOccurrence || "Not configured"}).`
@@ -292,18 +299,34 @@ export async function autoSubmitAttendance({
     throw new Error("Could not detect 'Present' option in SPeCTRUM attendance form.");
   }
 
-  // 2. Submit attendance POST request
   const postUrl = `${SPECTRUM_BASE_URL}/mod/attendance/attendance.php`;
-  const params = new URLSearchParams();
-  params.append("sessid", finalSessid);
-  params.append("sesskey", finalSesskey || "");
-  params.append("mform_is_submitted", "1");
-  params.append("status", statusId);
-  params.append("submitbutton", "Save changes");
+  let bodyStr = "";
+  if (typeof URLSearchParams !== "undefined") {
+    const params = new URLSearchParams();
+    params.append("sessid", finalSessid);
+    params.append("sesskey", finalSesskey || "");
+    params.append("mform_is_submitted", "1");
+    params.append("status", statusId);
+    params.append("submitbutton", "Save changes");
 
-  if (password) {
-    params.append("studentpassword", password.trim());
-    params.append("password", password.trim());
+    if (password) {
+      params.append("studentpassword", password.trim());
+      params.append("password", password.trim());
+    }
+    bodyStr = params.toString();
+  } else {
+    const parts = [
+      `sessid=${encodeURIComponent(finalSessid)}`,
+      `sesskey=${encodeURIComponent(finalSesskey || "")}`,
+      "mform_is_submitted=1",
+      `status=${encodeURIComponent(statusId)}`,
+      `submitbutton=${encodeURIComponent("Save changes")}`
+    ];
+    if (password) {
+      parts.push(`studentpassword=${encodeURIComponent(password.trim())}`);
+      parts.push(`password=${encodeURIComponent(password.trim())}`);
+    }
+    bodyStr = parts.join("&");
   }
 
   const postRes = await fetch(postUrl, {
@@ -312,7 +335,7 @@ export async function autoSubmitAttendance({
     headers: {
       "Content-Type": "application/x-www-form-urlencoded"
     },
-    body: params.toString()
+    body: bodyStr
   });
 
   if (postRes.redirected && postRes.url.includes("login")) {
@@ -370,7 +393,7 @@ export async function scanAndAutoRecordAttendance({ courses = [], sesskey, occur
 
     // STRICT REQUIREMENT: Only fill attendance for respective occ AND when open
     const isOpen = session.status === "open" && Boolean(session.submitUrl);
-    const matchesOcc = isRespectiveOccurrence(session.group, occ);
+    const matchesOcc = isRespectiveOccurrence(session.group, occ, session.description);
 
     if (!isOpen || !matchesOcc) {
       console.log(`[Spectra Attendance] Skipping session ${session.id}: isOpen=${isOpen}, matchesOcc=${matchesOcc} (group: "${session.group}", studentOcc: "${occ}")`);
@@ -385,6 +408,7 @@ export async function scanAndAutoRecordAttendance({ courses = [], sesskey, occur
           attendanceUrl: session.submitUrl,
           password: storedPwd,
           sessionGroup: session.group,
+          sessionDescription: session.description,
           studentOccurrence: occ,
           isOpen
         });

@@ -48,7 +48,7 @@
 ```
 spectra/
 ├── manifest.json              # Manifest V3 configuration & permissions
-├── popup.html                 # Apple Bento-grid UI with Deadlines, Notices, Attendance, Class Prep & Relay tabs
+├── popup.html                 # Apple Bento-grid UI with Deadlines, Notices, Attendance, Class Prep & Settings tabs
 ├── popup.css                  # Custom styling, transitions, urgency pulse animations, attendance cards
 ├── popup.js                   # Live zero-mock controller, week selector, occurrence setup, auto-attendance
 ├── background.js              # Service worker, alarms, cookie listener, attendance checker, Telegram/ntfy dispatch
@@ -103,16 +103,9 @@ spectra/
    - It will reply with your numeric `Id` (e.g., `987654321`).
    - Send at least one message or `/start` to your new bot.
 3. **Configure Spectra:**
-   - Open Spectra -> Navigate to the **Relay** tab.
+   - Open Spectra -> Navigate to the **Settings** tab.
    - Paste your **Bot Token** and **Chat ID**.
    - Click **"Send Test Telegram"** to verify instant delivery!
-
-### Option B: ntfy.sh (Zero-Setup Push Notifications)
-
-1. Download the free **ntfy** app on iOS ([App Store](https://apps.apple.com/app/ntfy/id1625396347)) or Android ([Google Play](https://play.google.com/store/apps/details?id=io.heckel.ntfy)).
-2. Choose a unique topic name (e.g. `um_spectra_student_yourmatric`).
-3. Subscribe to that topic in your mobile app.
-4. In Spectra's **Relay** tab, enter your topic under **ntfy Topic Name** and click **"Send Test ntfy Alert"**.
 
 ---
 
@@ -128,7 +121,7 @@ When your laptop is asleep, Spectra's local background alarms pause. To enable 2
    - `TELEGRAM_CHAT_ID`: Your Telegram chat ID
    - `RELAY_SECRET_KEY`: A custom passphrase for Bearer authentication
 5. Add a Cron Trigger for `*/15 * * * *` (every 15 minutes).
-6. In Spectra -> **Relay Settings** -> Toggle **"Enable Cloud Relay Sync"**, paste your worker URL (`https://your-worker.workers.dev/sync`) and secret key, then click **"Sync Session Now"**.
+6. In Spectra -> **Settings** -> Toggle **"Enable Cloud Relay Sync"**, paste your worker URL (`https://your-worker.workers.dev/sync`) and secret key, then click **"Sync Session Now"**.
 7. Spectra will now automatically keep the cloud worker synchronized with your active `MoodleSession` cookie whenever you browse SPeCTRUM!
 
 ---

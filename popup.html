@@ -83,8 +83,8 @@
         <span id="weekIndicatorBadge" class="tab-badge-accent">W1</span>
       </button>
       <button id="tabSettings" class="nav-tab" role="tab" aria-selected="false" data-tab="settings">
-        <span class="tab-icon">⚡</span>
-        <span class="tab-label">Relay</span>
+        <span class="tab-icon">⚙️</span>
+        <span class="tab-label">Settings</span>
       </button>
     </nav>
 
@@ -703,7 +703,7 @@
       </main>
 
       <!-- ============================================================== -->
-      <!-- TAB 3: PHONE RELAY & PIPELINE SETTINGS                        -->
+      <!-- TAB 3: SETTINGS                                              -->
       <!-- ============================================================== -->
       <main id="sectionSettings" class="tab-content" role="tabpanel">
 
@@ -833,39 +833,6 @@
           </div>
         </div>
 
-        <!-- Alternative Webhook / ntfy.sh Bento Card -->
-        <div class="bento-card settings-card">
-          <div class="card-icon-title">
-            <div class="service-icon ntfy-icon">
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
-                <path stroke-linecap="round" stroke-linejoin="round"
-                  d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
-              </svg>
-            </div>
-            <div>
-              <h3 class="card-title">ntfy.sh Mobile Push</h3>
-              <p class="card-subtitle">Zero-setup phone notifications without a bot</p>
-            </div>
-          </div>
-
-          <div class="form-group">
-            <label for="ntfyTopic" class="form-label">
-              ntfy Topic Name
-              <span class="field-hint">Subscribe via ntfy mobile app</span>
-            </label>
-            <div class="prefix-input-wrap">
-              <span class="prefix-text">ntfy.sh/</span>
-              <input type="text" id="ntfyTopic" placeholder="um_spectra_student_key" class="bento-input input-prefixed">
-            </div>
-          </div>
-
-          <div class="action-btn-row">
-            <button id="testNtfyBtn" class="btn-secondary-action">
-              Send Test ntfy Alert
-            </button>
-          </div>
-        </div>
-
         <!-- Cloud Relay Sync Card -->
         <div class="bento-card settings-card">
           <div class="card-icon-title">
@@ -944,7 +911,7 @@
 
           <div class="save-actions-row">
             <button id="saveSettingsBtn" class="btn-primary-action btn-full">
-              Save Relay Settings
+              Save Settings
             </button>
           </div>
         </div>

@@ -298,6 +298,200 @@ assert(viewResult.sessions[0].date.includes("7 Oct"), "First session preserved")
 assert(viewResult.sessions[2].date.includes("21 Oct"), "Current date session preserved");
 assert(viewResult.hasOpenSession === true, "Open session on current date detected");
 
+// -------------------------------------------------------------
+// 8. Occurrence Filtering by Subject & Description
+// -------------------------------------------------------------
+assert(matchesOccurrence("All students", "Occ 1", "Occ 2 Lab") === false, "Universal group with Occ 2 in desc does not match Occ 1");
+assert(matchesOccurrence("All students", "Occ 1", "Occ 1 Tutorial") === true, "Universal group with Occ 1 in desc matches Occ 1");
+assert(matchesOccurrence("All students", "Occ 1", "General Lecture") === true, "Universal group with no occurrence in desc matches Occ 1");
+
+// Test parseAttendanceView with occurrence not present in table
+const parsedViewOcc99 = parseAttendanceView(sampleViewHtml, "Occ 99");
+assert(parsedViewOcc99.summary.presentCount === 0, "Occ 99 present count is 0 (no fallback to other occs)");
+assert(parsedViewOcc99.summary.lateCount === 0, "Occ 99 late count is 0");
+assert(parsedViewOcc99.summary.absentCount === 0, "Occ 99 absent count is 0");
+
+// Test fetchCourseAttendance occurrence filtering
+const origFetch = globalThis.fetch;
+globalThis.fetch = async (url) => {
+  if (url.includes("index.php")) {
+    return {
+      ok: true,
+      text: async () => `<a href="https://spectrum.um.edu.my/mod/attendance/view.php?id=123">Attendance</a>`
+    };
+  }
+  return {
+    ok: true,
+    text: async () => sampleViewHtml
+  };
+};
+
+const recordOcc1 = await fetchCourseAttendance({ courseId: "123", courseCode: "WIX2002", occurrence: "Occ 1" });
+assert(recordOcc1.sessions.length === 4, "fetchCourseAttendance for Occ 1 only returns 4 matching sessions (Occ 2 excluded)");
+assert(recordOcc1.sessions.every(s => s.group !== "Occ 2"), "Occ 2 session strictly excluded for Occ 1");
+
+const recordOcc2 = await fetchCourseAttendance({ courseId: "123", courseCode: "WIX2002", occurrence: "Occ 2" });
+assert(recordOcc2.sessions.length === 2, "fetchCourseAttendance for Occ 2 only returns 2 matching sessions (Occ 1 excluded)");
+assert(recordOcc2.sessions.every(s => s.group !== "Occ 1"), "Occ 1 sessions strictly excluded for Occ 2");
+
+const recordAllOcc = await fetchCourseAttendance({ courseId: "123", courseCode: "WIX2002", occurrence: "" });
+assert(recordAllOcc.sessions.length === 5, "fetchCourseAttendance with empty occurrence includes all sessions");
+
+// -------------------------------------------------------------
+// 9. Auto Attendance Scan & Self-Recording Pipeline Tests
+// -------------------------------------------------------------
+const sampleOpenOcc1Html = `
+  <div class="attendance_view">
+    <table class="generaltable attlist">
+      <tbody>
+        <tr>
+          <td>Today</td>
+          <td>10:00AM - 12:00PM</td>
+          <td>Occ 1</td>
+          <td>Lecture Check-in</td>
+          <td><a href="https://spectrum.um.edu.my/mod/attendance/attendance.php?sessid=7701&amp;sesskey=sess123">Submit attendance</a></td>
+          <td>?</td>
+          <td></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+`;
+
+const sampleOpenOcc2Html = `
+  <div class="attendance_view">
+    <table class="generaltable attlist">
+      <tbody>
+        <tr>
+          <td>Today</td>
+          <td>02:00PM - 04:00PM</td>
+          <td>Occ 2</td>
+          <td>Lab Check-in</td>
+          <td><a href="https://spectrum.um.edu.my/mod/attendance/attendance.php?sessid=7702&amp;sesskey=sess123">Submit attendance</a></td>
+          <td>?</td>
+          <td></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+`;
+
+const sampleStandardForm = `
+  <form action="https://spectrum.um.edu.my/mod/attendance/attendance.php" method="post">
+    <input type="hidden" name="sessid" value="7701">
+    <input type="hidden" name="sesskey" value="sess123">
+    <input type="radio" name="status" value="701"><label>Present</label>
+    <input type="submit" name="submitbutton" value="Save changes">
+  </form>
+`;
+
+const samplePasswordReqForm = `
+  <form action="https://spectrum.um.edu.my/mod/attendance/attendance.php" method="post">
+    <input type="hidden" name="sessid" value="7703">
+    <input type="hidden" name="sesskey" value="sess123">
+    <input type="radio" name="status" value="701"><label>Present</label>
+    <input type="password" name="studentpassword" value="">
+    <input type="submit" name="submitbutton" value="Save changes">
+  </form>
+`;
+
+let postPayloadReceived = null;
+globalThis.fetch = async (url, opts = {}) => {
+  const urlStr = String(url);
+  if (opts.method === "POST") {
+    postPayloadReceived = opts.body;
+    return {
+      ok: true,
+      text: async () => "Attendance has been successfully recorded."
+    };
+  }
+  if (urlStr.includes("index.php")) {
+    if (urlStr.includes("id=course_occ2")) {
+      return {
+        ok: true,
+        text: async () => `<a href="https://spectrum.um.edu.my/mod/attendance/view.php?id=cmid_occ2">Attendance</a>`
+      };
+    }
+    return {
+      ok: true,
+      text: async () => `<a href="https://spectrum.um.edu.my/mod/attendance/view.php?id=9901">Attendance</a>`
+    };
+  }
+  if (urlStr.includes("view.php")) {
+    if (urlStr.includes("id=cmid_occ2")) {
+      return { ok: true, text: async () => sampleOpenOcc2Html };
+    }
+    return { ok: true, text: async () => sampleOpenOcc1Html };
+  }
+  if (urlStr.includes("attendance.php?sessid=7703")) {
+    return { ok: true, text: async () => samplePasswordReqForm };
+  }
+  if (urlStr.includes("attendance.php")) {
+    return { ok: true, text: async () => sampleStandardForm };
+  }
+  return { ok: true, text: async () => "" };
+};
+
+// 9.1: Auto-submit matches student occurrence
+const autoResult1 = await scanAndAutoRecordAttendance({
+  courses: [{ id: "101", code: "WIX2002", name: "Data Science" }],
+  sesskey: "sess123",
+  occurrencesMap: { "101": "Occ 1" },
+  autoSubmit: true
+});
+assert(autoResult1.actions.length === 1, "Auto attendance: Detected 1 matching open session");
+assert(autoResult1.actions[0].result.success === true, "Auto attendance: Successfully recorded attendance check-in");
+assert(autoResult1.actions[0].result.status === "Present", "Auto attendance: Marked status as Present");
+assert(postPayloadReceived && postPayloadReceived.includes("status=701"), "Auto attendance: POST payload contains status=701");
+assert(postPayloadReceived.includes("sessid=7701"), "Auto attendance: POST payload contains sessid=7701");
+
+// 9.2: Skips open session when occurrence does NOT match
+const autoResult2 = await scanAndAutoRecordAttendance({
+  courses: [{ id: "course_occ2", code: "WIA1001", name: "Programming" }],
+  sesskey: "sess123",
+  occurrencesMap: { "course_occ2": "Occ 1" }, // student is Occ 1, but session is Occ 2
+  autoSubmit: true
+});
+assert(autoResult2.actions.length === 0, "Auto attendance: Strictly skipped open session belonging to different occurrence (Occ 2 vs student Occ 1)");
+
+// 9.3: Password detection when password required but not supplied
+const autoResult3 = await autoSubmitAttendance({
+  sessid: "7703",
+  sesskey: "sess123",
+  attendanceUrl: "https://spectrum.um.edu.my/mod/attendance/attendance.php?sessid=7703",
+  isOpen: true,
+  sessionGroup: "Occ 1",
+  studentOccurrence: "Occ 1"
+});
+assert(autoResult3.success === false, "Auto attendance: Pauses check-in when password is required");
+assert(autoResult3.requiresPassword === true, "Auto attendance: Correctly flags requiresPassword: true");
+
+// 9.4: Password submission succeeds when password provided
+postPayloadReceived = null;
+const autoResult4 = await autoSubmitAttendance({
+  sessid: "7703",
+  sesskey: "sess123",
+  attendanceUrl: "https://spectrum.um.edu.my/mod/attendance/attendance.php?sessid=7703",
+  password: "LECTURER_SECRET",
+  isOpen: true,
+  sessionGroup: "Occ 1",
+  studentOccurrence: "Occ 1"
+});
+assert(autoResult4.success === true, "Auto attendance: Check-in succeeds with password provided");
+assert(postPayloadReceived && postPayloadReceived.includes("studentpassword=LECTURER_SECRET"), "Auto attendance: Password included in POST request");
+
+// 9.5: Duplicate prevention in background attendance loop
+const mockRecordedSessids = new Set(["7701"]); // session 7701 was already processed in cycle 1
+let alertsDispatched = 0;
+for (const act of autoResult1.actions) {
+  const sid = act.session?.sessid;
+  if (!sid || mockRecordedSessids.has(sid)) continue;
+  alertsDispatched++;
+}
+assert(alertsDispatched === 0, "Auto attendance: Session 7701 already in recordedSessids is skipped without duplicate alert");
+
+globalThis.fetch = origFetch;
+
 console.log(`\n=== All Attendance Tests Finished: ${passed} passed, ${failed} failed ===`);
 if (failed > 0) {
   throw new Error(`${failed} tests failed`);

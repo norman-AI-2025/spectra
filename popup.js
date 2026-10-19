@@ -250,6 +250,13 @@ function initDOMListeners() {
       if (typeof chrome !== "undefined" && chrome.storage?.local) {
         await chrome.storage.local.remove(["cached_announcements"]);
       }
+      if (typeof chrome !== "undefined" && chrome.runtime?.sendMessage) {
+        try {
+          await chrome.runtime.sendMessage({ action: "MANUAL_SYNC_ANNOUNCEMENTS" });
+        } catch (e) {
+          console.warn("[Spectra] Could not trigger background announcement sync:", e);
+        }
+      }
       await loadLiveAnnouncements();
       refreshAnnouncementsBtn.disabled = false;
       refreshAnnouncementsBtn.textContent = "Check SPeCTRUM Forums";
@@ -400,7 +407,8 @@ function initDOMListeners() {
 
   // Settings: Test Buttons
   document.getElementById("testTelegramBtn").addEventListener("click", handleTestTelegram);
-  document.getElementById("testNtfyBtn").addEventListener("click", handleTestNtfy);
+  const testNtfyBtn = document.getElementById("testNtfyBtn");
+  if (testNtfyBtn) testNtfyBtn.addEventListener("click", handleTestNtfy);
   document.getElementById("syncCloudNowBtn").addEventListener("click", handleManualCloudSync);
   document.getElementById("saveSettingsBtn").addEventListener("click", handleSaveSettings);
 }
@@ -1357,7 +1365,10 @@ async function loadLiveAnnouncements() {
 
     // 1. Check if cached_announcements exists in storage
     if (typeof chrome !== "undefined" && chrome.storage?.local) {
-      const stored = await chrome.storage.local.get(["cached_announcements"]);
+      const stored = await chrome.storage.local.get(["cached_announcements", "telegram_sent_announcement_ids"]);
+      if (Array.isArray(stored.telegram_sent_announcement_ids)) {
+        state.telegramSentAnnouncementIds = new Set(stored.telegram_sent_announcement_ids.map(String));
+      }
       if (Array.isArray(stored.cached_announcements) && stored.cached_announcements.length > 0) {
         announcements = stored.cached_announcements;
       }
@@ -1372,6 +1383,11 @@ async function loadLiveAnnouncements() {
         state.courses = courses;
         announcements = await fetchLiveAnnouncements(courses, state.sesskey);
       }
+
+      announcements = announcements.map((a) => ({
+        ...a,
+        telegramSent: state.telegramSentAnnouncementIds.has(String(a.id))
+      }));
 
       if (typeof chrome !== "undefined" && chrome.storage?.local && announcements.length > 0) {
         await chrome.storage.local.set({ cached_announcements: announcements });
@@ -1823,11 +1839,17 @@ function renderAttendanceRecords() {
     if (statsBar) statsBar.classList.add("hidden");
   }
 
-  // Flatten sessions with courseViewUrl (STRICT: only show attendance from first session till current date)
+  // Flatten sessions with courseViewUrl (STRICT: only show attendance according to occurrence for each subject)
   const allSessions = [];
   targetCourses.forEach((c) => {
+    const configuredOcc = state.courseOccurrences[c.courseId] || state.courseOccurrences[c.courseCode] || c.occurrence || "";
+    const hasConfiguredOcc = Boolean(configuredOcc && configuredOcc.trim().toLowerCase() !== "all");
     const cViewUrl = c.viewUrl || (c.cmid ? `https://spectrum.um.edu.my/mod/attendance/view.php?id=${c.cmid}` : `https://spectrum.um.edu.my/course/view.php?id=${c.courseId}`);
     (c.sessions || []).forEach((s) => {
+      // STRICT REQUIREMENT: Only show attendance according to occurrence for each subject
+      if (hasConfiguredOcc && !isRespectiveOccurrence(s.group, configuredOcc, s.description)) {
+        return;
+      }
       if (s.isPastOrCurrent !== false && isAttendanceSessionPastOrCurrent(s.date, s.time, s.status)) {
         allSessions.push({
           ...s,
@@ -2283,7 +2305,7 @@ async function handleDownloadWeekPack() {
 }
 
 // ===================================================================
-// TAB 3: RELAY SETTINGS LOGIC
+// TAB 3: SETTINGS LOGIC
 // ===================================================================
 async function handleTestTelegram() {
   const tokenInput = document.getElementById("telegramToken");
@@ -2428,7 +2450,8 @@ async function handleSaveSettings() {
   if (tokenInput && botToken) tokenInput.value = botToken;
   if (chatInput && chatId) chatInput.value = chatId;
 
-  const ntfyTopic = document.getElementById("ntfyTopic").value.trim();
+  const ntfyInput = document.getElementById("ntfyTopic");
+  const ntfyTopic = ntfyInput ? ntfyInput.value.trim() : "";
   const cloudEnabled = document.getElementById("cloudRelayToggle").checked;
   const cloudUrl = document.getElementById("cloudRelayUrl").value.trim();
   const cloudSecret = document.getElementById("cloudRelaySecret").value.trim();
@@ -2455,7 +2478,7 @@ async function handleSaveSettings() {
     });
   }
 
-  showToast("Relay settings saved successfully!", "success");
+  showToast("Settings saved successfully!", "success");
 }
 
 // ===================================================================
@@ -2638,7 +2661,8 @@ async function loadStoredPreferences() {
 
   if (stored.telegram_bot_token) document.getElementById("telegramToken").value = stored.telegram_bot_token;
   if (stored.telegram_chat_id) document.getElementById("telegramChatId").value = stored.telegram_chat_id;
-  if (stored.ntfy_topic) document.getElementById("ntfyTopic").value = stored.ntfy_topic;
+  const ntfyInput = document.getElementById("ntfyTopic");
+  if (ntfyInput && stored.ntfy_topic) ntfyInput.value = stored.ntfy_topic;
 
   const cloudEnabled = Boolean(stored.cloud_relay_enabled);
   document.getElementById("cloudRelayToggle").checked = cloudEnabled;

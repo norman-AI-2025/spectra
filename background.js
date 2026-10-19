@@ -54,6 +54,8 @@ chrome.runtime.onInstalled.addListener(async (details) => {
     completed_assignment_ids: [],
     seen_announcement_ids: [],
     seen_deadline_alert_ids: [],
+    telegram_sent_announcement_ids: [],
+    telegram_sent_deadline_ids: [],
     last_sync_timestamp: null,
     semester_start_date: "2026-10-05"
   };
@@ -312,8 +314,11 @@ async function pollAnnouncements() {
       try {
         const telegramHtml = formatAnnouncementTelegram(item);
         const res = await sendTelegramMessage(store.telegram_bot_token, store.telegram_chat_id, telegramHtml);
-        if (res && (res.ok || res.message_id)) {
+        if (res && (res.success || res.ok || res.messageId || res.message_id)) {
           telegramSentIds.add(itemIdStr);
+          await chrome.storage.local.set({
+            telegram_sent_announcement_ids: Array.from(telegramSentIds)
+          });
           console.log(`[Spectra Telegram] Sent announcement "${item.subject}" (${itemIdStr}) and flagged as sent.`);
         }
       } catch (tgErr) {
@@ -392,7 +397,7 @@ async function checkUpcomingDeadlines() {
 
   const now = Date.now();
   const urgentItems = deadlines.filter((d) => {
-    if (completed.has(String(d.id))) return false;
+    if (completed.has(String(d.id)) || d.isCompleted || d.isSubmittedOnSpectrum) return false;
     if (!d.dueTimestamp) return false;
     const diffHours = (d.dueTimestamp - now) / (1000 * 60 * 60);
     // Alert for impending submissions due 1 day before (0 < diffHours <= 24)
@@ -408,8 +413,11 @@ async function checkUpcomingDeadlines() {
       try {
         const telegramHtml = formatDeadlineTelegram(item);
         const res = await sendTelegramMessage(store.telegram_bot_token, store.telegram_chat_id, telegramHtml);
-        if (res && (res.ok || res.message_id)) {
+        if (res && (res.success || res.ok || res.messageId || res.message_id)) {
           telegramSentDeadlineIds.add(itemIdStr);
+          await chrome.storage.local.set({
+            telegram_sent_deadline_ids: Array.from(telegramSentDeadlineIds)
+          });
           console.log(`[Spectra Telegram] Sent deadline alert "${item.title}" (${itemIdStr}) and flagged as sent.`);
         }
       } catch (e) {
@@ -670,6 +678,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           await pollAnnouncements();
           const stored = await chrome.storage.local.get(["cached_announcements"]);
           sendResponse({ success: true, announcements: stored.cached_announcements || [] });
+          break;
+        }
+
+        case "CHECK_DEADLINES":
+        case "MANUAL_SYNC_DEADLINES": {
+          await checkUpcomingDeadlines();
+          const stored = await chrome.storage.local.get(["telegram_sent_deadline_ids"]);
+          sendResponse({ success: true, sentDeadlineIds: stored.telegram_sent_deadline_ids || [] });
           break;
         }
 
