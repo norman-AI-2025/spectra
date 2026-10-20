@@ -18,7 +18,8 @@ import {
   parseAttendanceTabs,
   parseAttendanceForm,
   parseAttendanceSessionDate,
-  isAttendanceSessionPastOrCurrent
+  isAttendanceSessionPastOrCurrent,
+  extractStartTime
 } from "../utils/parser.js";
 
 import {
@@ -579,6 +580,130 @@ assert(!sessionDescs.includes("Future Week Session Occ 1"), "Strict: Future unre
 assert(!sessionDescs.includes("Future Week Session Occ 2"), "Strict: Future unrecorded session for Occ 2 is excluded");
 assert(sessionDescs.includes("Past Session Occ 1"), "Strict: Past session for respective occurrence is included");
 assert(sessionDescs.includes("Current Date Session Occ 1"), "Strict: Current date session for respective occurrence is included");
+
+// -------------------------------------------------------------
+// 11. Current Date Scheduled Session & Auto-Fill Pipeline Tests
+// Scenario: Current time is 12:00 PM, class is scheduled at 2:00 PM today.
+// -------------------------------------------------------------
+console.log("\n=== Testing Current Date Scheduled Sessions (12pm now, 2pm class) ===");
+
+// 11.1: extractStartTime tests
+const timeResult1 = extractStartTime("2:00PM - 4:00PM");
+assert(timeResult1.hour === 14 && timeResult1.min === 0, "extractStartTime parses '2:00PM - 4:00PM' as hour 14");
+
+const timeResult2 = extractStartTime("14:00 - 16:00");
+assert(timeResult2.hour === 14 && timeResult2.min === 0, "extractStartTime parses '14:00 - 16:00' as hour 14");
+
+const timeResult3 = extractStartTime("8.30 AM - 10.30 AM");
+assert(timeResult3.hour === 8 && timeResult3.min === 30, "extractStartTime parses '8.30 AM' as hour 8, min 30");
+
+// 11.2: Date parsing for today's 2pm session when reference time is 12pm
+const ref12pm = new Date("2024-10-21T12:00:00"); // 12:00 PM on Mon 21 Oct 2024
+const ts2pm = parseAttendanceSessionDate("Mon 21 Oct 2024", "2:00PM - 4:00PM", ref12pm);
+const d2pm = new Date(ts2pm);
+assert(d2pm.getDate() === 21 && d2pm.getHours() === 14, "parseAttendanceSessionDate reflects 2:00 PM today");
+
+// 11.3: isAttendanceSessionPastOrCurrent for 2pm session today at 12pm
+assert(
+  isAttendanceSessionPastOrCurrent("Mon 21 Oct 2024", "2:00PM - 4:00PM", "unrecorded", ref12pm) === true,
+  "2:00 PM unrecorded session today is included when current time is 12:00 PM"
+);
+assert(
+  isAttendanceSessionPastOrCurrent("Today", "2:00PM - 4:00PM", "unrecorded", ref12pm) === true,
+  "Today unrecorded session is included"
+);
+assert(
+  isAttendanceSessionPastOrCurrent("Hari ini", "14:00 - 16:00", "unrecorded", ref12pm) === true,
+  "Hari ini unrecorded session is included"
+);
+assert(
+  isAttendanceSessionPastOrCurrent("Tue 22 Oct 2024", "2:00PM - 4:00PM", "unrecorded", ref12pm) === false,
+  "Tomorrow 2:00 PM unrecorded session is excluded"
+);
+
+// 11.4: HTML parsing at 12pm: shows 2pm session with status 'today' / 'Scheduled Today (2:00PM)'
+const tableWith2pmToday = `
+  <table class="attlist">
+    <tr>
+      <td>Mon 14 Oct 2024</td><td>2:00PM - 4:00PM</td><td>Occ 1</td><td>Past Lecture</td><td>Present</td><td>2 / 2</td>
+    </tr>
+    <tr>
+      <td>Mon 21 Oct 2024</td><td>2:00PM - 4:00PM</td><td>Occ 1</td><td>Today 2pm Lecture</td><td>?</td><td>?</td>
+    </tr>
+    <tr>
+      <td>Mon 28 Oct 2024</td><td>2:00PM - 4:00PM</td><td>Occ 1</td><td>Next Week Lecture</td><td>?</td><td>?</td>
+    </tr>
+  </table>
+`;
+
+const parsedAt12pm = parseAttendanceView(tableWith2pmToday, "Occ 1", ref12pm);
+assert(parsedAt12pm.sessions.length === 2, "At 12pm: Shows past session and today's 2pm session (next week excluded)");
+const today2pmSess = parsedAt12pm.sessions.find(s => s.description === "Today 2pm Lecture");
+assert(Boolean(today2pmSess), "Today's 2pm session is present in sessions list at 12pm");
+assert(today2pmSess.isToday === true, "Today's 2pm session has isToday: true");
+assert(today2pmSess.status === "today", "Today's 2pm unrecorded session has status: 'today'");
+assert(today2pmSess.statusLabel.includes("Scheduled Today"), "Today's 2pm unrecorded session has statusLabel 'Scheduled Today'");
+assert(parsedAt12pm.hasOpenSession === false, "At 12pm before check-in opens, hasOpenSession is false");
+
+// 11.5: At 2:00 PM: Check-in opens on SPeCTRUM with submit link -> auto-fills
+const tableWith2pmOpen = `
+  <table class="attlist">
+    <tr>
+      <td>Mon 21 Oct 2024</td><td>2:00PM - 4:00PM</td><td>Occ 1</td><td>Today 2pm Lecture</td><td><a href="https://spectrum.um.edu.my/mod/attendance/attendance.php?sessid=9921">Submit attendance</a></td><td>?</td>
+    </tr>
+  </table>
+`;
+const parsedAt2pm = parseAttendanceView(tableWith2pmOpen, "Occ 1", ref12pm);
+assert(parsedAt2pm.hasOpenSession === true, "When 2pm arrives and check-in opens, hasOpenSession is true");
+assert(parsedAt2pm.openSession.sessid === "9921", "Open session matches sessid 9921");
+assert(parsedAt2pm.openSession.status === "open", "Session status is 'open'");
+
+// 11.6: Auto-fill check-in pipeline executes and submits Present for today's 2pm session
+globalThis.fetch = async (url, options = {}) => {
+  const urlStr = String(url);
+  if (urlStr.includes("index.php")) {
+    return {
+      ok: true,
+      text: async () => `<a href="https://spectrum.um.edu.my/mod/attendance/view.php?id=9921">Attendance</a>`
+    };
+  }
+  if (urlStr.includes("view.php")) {
+    return { ok: true, text: async () => tableWith2pmOpen };
+  }
+  if (urlStr.includes("attendance.php?sessid=9921")) {
+    return {
+      ok: true,
+      text: async () => `
+        <form action="attendance.php" method="post">
+          <input type="hidden" name="sesskey" value="sesskey_2pm">
+          <input type="hidden" name="sessid" value="9921">
+          <input type="radio" name="status" value="702"><label>Present</label>
+        </form>
+      `
+    };
+  }
+  if (urlStr.includes("attendance.php") && options.method === "POST") {
+    assert(options.body.includes("status=702"), "POST contains status=702 (Present)");
+    assert(options.body.includes("sessid=9921"), "POST contains sessid=9921");
+    return {
+      ok: true,
+      text: async () => `<div class="alert-success">Your attendance has been recorded</div>`
+    };
+  }
+  return { ok: true, text: async () => "" };
+};
+
+const autoFillResult = await scanAndAutoRecordAttendance({
+  courses: [{ id: "999", code: "WIX2002", name: "Software Engineering" }],
+  sesskey: "sesskey_2pm",
+  occurrencesMap: { "999": "Occ 1" },
+  autoSubmit: true,
+  referenceDate: ref12pm
+});
+
+assert(autoFillResult.actions.length === 1, "Auto attendance detected 1 open session at 2pm");
+assert(autoFillResult.actions[0].result.success === true, "Successfully auto-filled attendance for today's 2pm session");
+assert(autoFillResult.actions[0].result.status === "Present", "Recorded status is Present");
 
 globalThis.fetch = origFetch;
 

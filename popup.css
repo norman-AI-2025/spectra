@@ -2404,6 +2404,11 @@ input:checked + .slider:before {
   background: #F0FDF4;
 }
 
+.attendance-session-card.session-today {
+  border-color: #93C5FD;
+  background: #F8FAFC;
+}
+
 .attendance-session-header {
   display: flex;
   align-items: center;
@@ -2474,6 +2479,12 @@ input:checked + .slider:before {
 .badge-open {
   background: #10B981;
   color: #FFFFFF;
+}
+
+.badge-today {
+  background: #EFF6FF;
+  color: #1D4ED8;
+  border: 1px solid #BFDBFE;
 }
 
 .badge-unrecorded {

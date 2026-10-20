@@ -1874,7 +1874,7 @@ function renderAttendanceRecords() {
 
   allSessions.forEach((s) => {
     const card = document.createElement("div");
-    card.className = `attendance-session-card ${s.status === "open" ? "session-open" : ""}`;
+    card.className = `attendance-session-card ${s.status === "open" ? "session-open" : s.status === "today" ? "session-today" : ""}`;
 
     let badgeClass = "badge-unrecorded";
     let statusText = s.statusLabel || "Unrecorded";
@@ -1884,6 +1884,7 @@ function renderAttendanceRecords() {
     else if (s.status === "absent") badgeClass = "badge-absent";
     else if (s.status === "excused") badgeClass = "badge-excused";
     else if (s.status === "open") badgeClass = "badge-open";
+    else if (s.status === "today") badgeClass = "badge-today";
 
     card.innerHTML = `
       <div class="attendance-session-header">
@@ -2014,7 +2015,7 @@ async function handleSubmitOpenAttendance() {
 
   // STRICT REQUIREMENT: Only fill attendance for respective occ AND when open
   const isOpen = session && session.status === "open" && Boolean(session.submitUrl);
-  const matchesOcc = session && isRespectiveOccurrence(session.group, occ);
+  const matchesOcc = session && isRespectiveOccurrence(session.group, occ, session.description, session.activityName);
 
   if (!isOpen) {
     showToast("This session is not currently open for check-in on SPeCTRUM.", "error");
@@ -2038,6 +2039,8 @@ async function handleSubmitOpenAttendance() {
       attendanceUrl: session?.submitUrl,
       password,
       sessionGroup: session?.group,
+      sessionDescription: session?.description,
+      activityName: session?.activityName,
       studentOccurrence: occ,
       isOpen
     });

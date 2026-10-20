@@ -760,16 +760,58 @@ export function parseAttendanceTabs(html, cmid, baseUrl = "https://spectrum.um.e
 }
 
 /**
- * Normalizes and parses SPeCTRUM attendance date strings
- * Supports English and Bahasa Melayu dates, dates without year, as well as DD/MM/YYYY, DD.MM.YYYY, and DD-MM-YYYY.
+ * Extracts hour and minute (24-hour format) from time string
+ * Supports "2:00PM", "14:00", "2PM", "02:00 PM - 04:00 PM", "8.30 AM", etc.
  */
-export function parseAttendanceSessionDate(dateText, timeText = "") {
+export function extractStartTime(timeStr) {
+  if (!timeStr) return null;
+  const str = String(timeStr).replace(/\u00a0/g, " ").trim();
+  const m = str.match(/(\d{1,2})(?:[:.](\d{2}))?\s*(am|pm)?/i);
+  if (!m) return null;
+
+  let hour = parseInt(m[1], 10);
+  const min = m[2] ? parseInt(m[2], 10) : 0;
+  const ampm = m[3] ? m[3].toLowerCase() : null;
+
+  if (ampm === "pm" && hour < 12) hour += 12;
+  else if (ampm === "am" && hour === 12) hour = 0;
+
+  return { hour, min };
+}
+
+/**
+ * Normalizes and parses SPeCTRUM attendance date strings
+ * Supports English and Bahasa Melayu dates, dates without year, Today / Hari ini, as well as DD/MM/YYYY, DD.MM.YYYY, and DD-MM-YYYY.
+ */
+export function parseAttendanceSessionDate(dateText, timeText = "", referenceDate = new Date()) {
   if (!dateText) return null;
 
-  const now = new Date();
-  const currentYear = now.getFullYear();
+  const ref = new Date(referenceDate || new Date());
+  const currentYear = ref.getFullYear();
 
-  let cleaned = String(dateText)
+  let raw = String(dateText).replace(/\u00a0/g, " ").trim();
+  const parsedTime = extractStartTime(timeText) || extractStartTime(raw);
+
+  const lower = raw.toLowerCase();
+  // Check for today / hari ini
+  if (lower.includes("today") || lower.includes("hari ini")) {
+    const d = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate());
+    if (parsedTime) {
+      d.setHours(parsedTime.hour, parsedTime.min, 0, 0);
+    }
+    return d.getTime();
+  }
+
+  // Check for yesterday / semalam
+  if (lower.includes("yesterday") || lower.includes("semalam")) {
+    const d = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate() - 1);
+    if (parsedTime) {
+      d.setHours(parsedTime.hour, parsedTime.min, 0, 0);
+    }
+    return d.getTime();
+  }
+
+  let cleaned = raw
     // Strip day names (English & Malay)
     .replace(/\b(isnin|selasa|rabu|khamis|jumaat|sabtu|ahad)\b/gi, "")
     .replace(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi, "")
@@ -789,6 +831,7 @@ export function parseAttendanceSessionDate(dateText, timeText = "") {
     .replace(/\bdis(?:ember)?\b/gi, "Dec")
     // Clean unwanted characters and symbols like commas, brackets, etc.
     .replace(/[,\(\)]/g, " ")
+    .replace(/\s+/g, " ")
     .trim();
 
   // 1. Try DD/MM/YYYY or DD.MM.YYYY or DD-MM-YYYY or DD/MM/YY
@@ -798,11 +841,29 @@ export function parseAttendanceSessionDate(dateText, timeText = "") {
     const month = parseInt(slashMatch[2], 10) - 1;
     let year = slashMatch[3] ? parseInt(slashMatch[3], 10) : currentYear;
     if (year < 100) year += 2000;
-    const parsedTs = new Date(year, month, day).getTime();
+    const d = new Date(year, month, day);
+    if (parsedTime) {
+      d.setHours(parsedTime.hour, parsedTime.min, 0, 0);
+    }
+    const parsedTs = d.getTime();
     if (!isNaN(parsedTs)) return parsedTs;
   }
 
-  // 2. Try DD Month (e.g. "20 Oct" or "20 Oct 2026")
+  // 2. Try YYYY-MM-DD
+  const isoMatch = cleaned.match(/^(\d{4})[\.\/\-](\d{1,2})[\.\/\-](\d{1,2})/);
+  if (isoMatch) {
+    const year = parseInt(isoMatch[1], 10);
+    const month = parseInt(isoMatch[2], 10) - 1;
+    const day = parseInt(isoMatch[3], 10);
+    const d = new Date(year, month, day);
+    if (parsedTime) {
+      d.setHours(parsedTime.hour, parsedTime.min, 0, 0);
+    }
+    const parsedTs = d.getTime();
+    if (!isNaN(parsedTs)) return parsedTs;
+  }
+
+  // 3. Try DD Month (e.g. "20 Oct" or "20 Oct 2026")
   const monthNames = {
     jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
     jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11
@@ -814,18 +875,46 @@ export function parseAttendanceSessionDate(dateText, timeText = "") {
     if (monthNames[monStr] !== undefined) {
       let year = wordMatch[3] ? parseInt(wordMatch[3], 10) : currentYear;
       if (year < 100) year += 2000;
-      const parsedTs = new Date(year, monthNames[monStr], day).getTime();
+      const d = new Date(year, monthNames[monStr], day);
+      if (parsedTime) {
+        d.setHours(parsedTime.hour, parsedTime.min, 0, 0);
+      }
+      const parsedTs = d.getTime();
       if (!isNaN(parsedTs)) return parsedTs;
     }
   }
 
-  // 3. Fallback: If year is missing in string, append current year and try native parse
+  // 4. Try Month DD, YYYY (e.g. "October 20 2026")
+  const monthFirstMatch = cleaned.match(/([A-Za-z]+)\s+(\d{1,2})(?:[\s,]+(\d{2,4}))?/);
+  if (monthFirstMatch) {
+    const monStr = monthFirstMatch[1].slice(0, 3).toLowerCase();
+    const day = parseInt(monthFirstMatch[2], 10);
+    if (monthNames[monStr] !== undefined) {
+      let year = monthFirstMatch[3] ? parseInt(monthFirstMatch[3], 10) : currentYear;
+      if (year < 100) year += 2000;
+      const d = new Date(year, monthNames[monStr], day);
+      if (parsedTime) {
+        d.setHours(parsedTime.hour, parsedTime.min, 0, 0);
+      }
+      const parsedTs = d.getTime();
+      if (!isNaN(parsedTs)) return parsedTs;
+    }
+  }
+
+  // 5. Fallback: If year is missing in string, append current year and try native parse
   if (!/\b\d{4}\b/.test(cleaned)) {
     cleaned = `${cleaned} ${currentYear}`;
   }
 
   let ts = Date.parse(cleaned);
-  if (!isNaN(ts)) return ts;
+  if (!isNaN(ts)) {
+    if (parsedTime) {
+      const d = new Date(ts);
+      d.setHours(parsedTime.hour, parsedTime.min, 0, 0);
+      return d.getTime();
+    }
+    return ts;
+  }
 
   return null;
 }
@@ -834,14 +923,20 @@ export function parseAttendanceSessionDate(dateText, timeText = "") {
  * Checks whether an attendance session is scheduled on or before the current date.
  * - Open sessions are currently active today -> true
  * - Already recorded sessions (present, late, absent, excused) have already occurred -> true
+ * - Today's sessions (regardless of time, e.g. 2pm when it's 12pm) -> true
  * - Future unrecorded sessions (date > current date) -> false
  */
 export function isAttendanceSessionPastOrCurrent(dateText, timeText = "", status = "", referenceDate = new Date()) {
-  if (status === "open" || status === "present" || status === "late" || status === "absent" || status === "excused") {
+  if (status === "open" || status === "present" || status === "late" || status === "absent" || status === "excused" || status === "today") {
     return true;
   }
 
-  const ts = parseAttendanceSessionDate(dateText, timeText);
+  const rawLower = String(dateText || "").toLowerCase();
+  if (rawLower.includes("today") || rawLower.includes("hari ini")) {
+    return true;
+  }
+
+  const ts = parseAttendanceSessionDate(dateText, timeText, referenceDate);
   if (!ts) {
     // If unrecorded session date cannot be parsed, strictly exclude from past/current
     return false;
@@ -879,6 +974,8 @@ export function parseAttendanceView(html, studentOccurrence = "", referenceDate 
     excusedCount: 0,
     unrecordedCount: 0
   };
+
+  const ref = new Date(referenceDate || new Date());
 
   // 1. DOMParser Method (Browser / Popup)
   if (typeof DOMParser !== "undefined") {
@@ -936,8 +1033,25 @@ export function parseAttendanceView(html, studentOccurrence = "", referenceDate 
         }
 
         const isMatch = matchesOccurrence(groupText, studentOccurrence, descText, activityName);
-        const sessionTs = parseAttendanceSessionDate(dateText, timeText);
+        const sessionTs = parseAttendanceSessionDate(dateText, timeText, referenceDate);
         const isPastOrCurrent = isAttendanceSessionPastOrCurrent(dateText, timeText, status, referenceDate);
+
+        // Check if session is on the current date (today)
+        const isToday = Boolean(
+          String(dateText).toLowerCase().includes("today") ||
+          String(dateText).toLowerCase().includes("hari ini") ||
+          (sessionTs && (
+            new Date(sessionTs).getFullYear() === ref.getFullYear() &&
+            new Date(sessionTs).getMonth() === ref.getMonth() &&
+            new Date(sessionTs).getDate() === ref.getDate()
+          ))
+        );
+
+        if (status === "unrecorded" && isToday) {
+          status = "today";
+          const startT = timeText ? timeText.split("-")[0].trim() : "";
+          statusLabel = startT ? `Scheduled Today (${startT})` : "Scheduled Today";
+        }
 
         sessions.push({
           id: sessid,
@@ -945,6 +1059,7 @@ export function parseAttendanceView(html, studentOccurrence = "", referenceDate 
           date: dateText,
           time: timeText,
           timestamp: sessionTs,
+          isToday,
           isPastOrCurrent,
           group: groupText,
           description: descText,
@@ -1033,8 +1148,25 @@ export function parseAttendanceView(html, studentOccurrence = "", referenceDate 
       }
 
       const isMatch = matchesOccurrence(groupText, studentOccurrence, descText, activityName);
-      const sessionTs = parseAttendanceSessionDate(dateText, timeText);
+      const sessionTs = parseAttendanceSessionDate(dateText, timeText, referenceDate);
       const isPastOrCurrent = isAttendanceSessionPastOrCurrent(dateText, timeText, status, referenceDate);
+
+      // Check if session is on the current date (today)
+      const isToday = Boolean(
+        String(dateText).toLowerCase().includes("today") ||
+        String(dateText).toLowerCase().includes("hari ini") ||
+        (sessionTs && (
+          new Date(sessionTs).getFullYear() === ref.getFullYear() &&
+          new Date(sessionTs).getMonth() === ref.getMonth() &&
+          new Date(sessionTs).getDate() === ref.getDate()
+        ))
+      );
+
+      if (status === "unrecorded" && isToday) {
+        status = "today";
+        const startT = timeText ? timeText.split("-")[0].trim() : "";
+        statusLabel = startT ? `Scheduled Today (${startT})` : "Scheduled Today";
+      }
 
       sessions.push({
         id: sessid,
@@ -1042,6 +1174,7 @@ export function parseAttendanceView(html, studentOccurrence = "", referenceDate 
         date: dateText,
         time: timeText,
         timestamp: sessionTs,
+        isToday,
         isPastOrCurrent,
         group: groupText,
         description: descText,

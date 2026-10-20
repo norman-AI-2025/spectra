@@ -500,8 +500,8 @@ export async function autoSubmitAttendance({
 /**
  * Scan all courses for open attendance sessions and auto-submit if enabled
  */
-export async function scanAndAutoRecordAttendance({ courses = [], sesskey, occurrencesMap = {}, autoSubmit = true, passwordsMap = {} }) {
-  const result = await fetchLiveAllAttendance(courses, sesskey, occurrencesMap);
+export async function scanAndAutoRecordAttendance({ courses = [], sesskey, occurrencesMap = {}, autoSubmit = true, passwordsMap = {}, referenceDate }) {
+  const result = await fetchLiveAllAttendance(courses, sesskey, occurrencesMap, referenceDate);
   const actions = [];
 
   for (const item of result.openSessions) {
@@ -512,7 +512,7 @@ export async function scanAndAutoRecordAttendance({ courses = [], sesskey, occur
 
     // STRICT REQUIREMENT: Only fill attendance for respective occ AND when open
     const isOpen = session.status === "open" && Boolean(session.submitUrl);
-    const matchesOcc = isRespectiveOccurrence(session.group, occ, session.description);
+    const matchesOcc = isRespectiveOccurrence(session.group, occ, session.description, session.activityName);
 
     if (!isOpen || !matchesOcc) {
       console.log(`[Spectra Attendance] Skipping session ${session.id}: isOpen=${isOpen}, matchesOcc=${matchesOcc} (group: "${session.group}", studentOcc: "${occ}")`);
@@ -528,6 +528,7 @@ export async function scanAndAutoRecordAttendance({ courses = [], sesskey, occur
           password: storedPwd,
           sessionGroup: session.group,
           sessionDescription: session.description,
+          activityName: session.activityName,
           studentOccurrence: occ,
           isOpen
         });
