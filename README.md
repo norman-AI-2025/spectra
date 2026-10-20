@@ -306,10 +306,9 @@ Every contribution directly helps cover serverless relay hosting and supports on
 
 ## 📄 License
 
-This project is licensed under the **MIT License** - see the [`LICENSE`](LICENSE) file for details.
+This project is licensed
 
 ```text
-MIT License
 Copyright (c) 2026 Norman Lee
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
