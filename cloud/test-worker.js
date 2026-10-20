@@ -129,6 +129,58 @@ globalThis.fetch = async function mockFetch(url, options = {}) {
     };
   }
 
+  // Mock SPeCTRUM attendance index
+  if (url.includes("spectrum.um.edu.my/mod/attendance/index.php")) {
+    return {
+      status: 200,
+      ok: true,
+      text: async () => `<a href="https://spectrum.um.edu.my/mod/attendance/view.php?id=9901">Attendance</a>`
+    };
+  }
+
+  // Mock SPeCTRUM attendance view (All sessions)
+  if (url.includes("spectrum.um.edu.my/mod/attendance/view.php")) {
+    return {
+      status: 200,
+      ok: true,
+      text: async () => `
+        <table>
+          <tr>
+            <td>Mon 21 Oct 2024</td>
+            <td>2:00PM - 4:00PM</td>
+            <td>Occ 1</td>
+            <td>Lecture 4</td>
+            <td><a href="https://spectrum.um.edu.my/mod/attendance/attendance.php?sessid=7701">Submit attendance</a></td>
+          </tr>
+        </table>
+      `
+    };
+  }
+
+  // Mock SPeCTRUM attendance form
+  if (url.includes("attendance.php?sessid=7701")) {
+    return {
+      status: 200,
+      ok: true,
+      text: async () => `
+        <form action="attendance.php" method="post">
+          <input type="hidden" name="sesskey" value="sess_cloud_123">
+          <input type="hidden" name="sessid" value="7701">
+          <input type="radio" name="status" value="701"><label>Present</label>
+        </form>
+      `
+    };
+  }
+
+  // Mock SPeCTRUM attendance submission POST
+  if (url.includes("spectrum.um.edu.my/mod/attendance/attendance.php") && options.method === "POST") {
+    return {
+      status: 200,
+      ok: true,
+      text: async () => `<div class="alert-success">Attendance recorded</div>`
+    };
+  }
+
   // Mock Telegram sendMessage endpoint
   if (url.includes("api.telegram.org/bot")) {
     return {
@@ -222,6 +274,8 @@ async function runTestSuite() {
     sessionToken: "MoodleSessionLiveToken_XYZ789",
     domain: "spectrum.um.edu.my",
     expires: 1799999999,
+    courses: [{ id: "101", code: "WIX2002", name: "Software Engineering" }],
+    occurrences: { "101": "Occ 1" },
     timestamp: Date.now()
   };
   const req5 = new MockRequest("https://worker.spectra.dev/sync", {
@@ -294,6 +348,21 @@ async function runTestSuite() {
   });
   const res10 = await worker.fetch(req10, env, new MockExecutionContext());
   assert(res10.status === 404, "Returns HTTP 404 for undefined endpoints");
+
+  // Test 11: 24/7 Cloud Attendance Auto-Submission
+  print("\nTest 11: 24/7 Cloud Attendance Auto-Submission");
+  const req11 = new MockRequest("https://worker.spectra.dev/poll", {
+    method: "POST",
+    headers: { "Authorization": "Bearer test-auth-secret-123" }
+  });
+  const res11 = await worker.fetch(req11, env, new MockExecutionContext());
+  assert(res11.status === 200, "POST /poll executes successfully");
+  const body11 = await res11.json();
+  assert(body11.attendanceRecorded >= 0, "Cloud Relay polling job completed attendance check");
+
+  // Verify recorded sessid was stored in KV to prevent double check-ins
+  const storedRecorded = await kv.get("recorded_sessids");
+  assert(storedRecorded !== null && storedRecorded.includes("7701"), "Sessid 7701 stored in recorded_sessids in KV");
 
   // Summary
   print("\n=================================================================");

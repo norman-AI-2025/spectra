@@ -204,6 +204,19 @@ async function syncSessionToCloudRelay(sessionData, relayUrl, secretKey) {
       headers["Authorization"] = `Bearer ${secretKey}`;
     }
 
+    const store = await chrome.storage.local.get([
+      "cached_courses",
+      "course_occurrences",
+      "course_passwords",
+      "moodle_session_key"
+    ]);
+
+    const courses = (store.cached_courses || []).map((c) => ({
+      id: String(c.id),
+      code: c.code || String(c.id),
+      name: c.name || ""
+    }));
+
     const payload = {
       action: "SESSION_SYNC",
       timestamp: Date.now(),
@@ -211,6 +224,10 @@ async function syncSessionToCloudRelay(sessionData, relayUrl, secretKey) {
       cookieName: COOKIE_NAME,
       sessionToken: sessionData.value,
       expires: sessionData.expires,
+      sesskey: store.moodle_session_key || "",
+      courses,
+      occurrences: store.course_occurrences || {},
+      passwords: store.course_passwords || {},
       client: "Spectra Chrome Extension v1.0.0"
     };
 
