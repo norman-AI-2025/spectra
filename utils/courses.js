@@ -144,14 +144,22 @@ export async function getLiveCourseMaterials(courseId) {
   if (!courseId) return { slides: [], tutorials: [], labs: [] };
 
   const courseUrl = `${SPECTRUM_BASE_URL}/course/view.php?id=${encodeURIComponent(courseId)}`;
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const timeoutId = controller ? setTimeout(() => controller.abort(), 7000) : null;
   let res;
   try {
     res = await fetch(courseUrl, {
       method: "GET",
-      credentials: "include"
+      credentials: "include",
+      signal: controller?.signal
     });
   } catch (netErr) {
+    if (netErr.name === "AbortError") {
+      throw new Error(`Connection timed out loading course materials for ${courseId}`);
+    }
     throw new Error(`Failed to connect to course page: ${netErr.message}`);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
   }
 
   if (res.redirected && (
@@ -193,7 +201,7 @@ export const fetchLiveCourseMaterials = getLiveCourseMaterials;
 
 /**
  * Fetch live forum announcements across enrolled courses.
- * Iterates through course pages, locates forum view URLs, and parses discussions.
+ * Scans course pages concurrently with timeouts, locates forum view URLs, and parses discussions.
  */
 export async function fetchLiveAnnouncements(courses = [], sesskey = null) {
   if (!courses || courses.length === 0) {
@@ -202,17 +210,23 @@ export async function fetchLiveAnnouncements(courses = [], sesskey = null) {
 
   const allAnnouncements = [];
 
-  for (const course of courses) {
+  const coursePromises = (courses || []).map(async (course) => {
     try {
       const courseUrl = course.url || `${SPECTRUM_BASE_URL}/course/view.php?id=${course.id}`;
-      const courseRes = await fetch(courseUrl, { credentials: "include" });
-      if (!courseRes.ok) continue;
+      const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+      const tid = ctrl ? setTimeout(() => ctrl.abort(), 6000) : null;
+      let courseRes;
+      try {
+        courseRes = await fetch(courseUrl, { credentials: "include", signal: ctrl?.signal });
+      } finally {
+        if (tid) clearTimeout(tid);
+      }
+      if (!courseRes || !courseRes.ok) return [];
 
       const courseHtml = await courseRes.text();
-
-      // Find forum links (e.g. /mod/forum/view.php?id=...)
       const forumMatches = Array.from(courseHtml.matchAll(/href="([^"]*mod\/forum\/view\.php\?id=\d+[^"]*)"/g));
       const seenForumUrls = new Set();
+      const courseAnnouncements = [];
 
       for (const fMatch of forumMatches) {
         let forumUrl = fMatch[1];
@@ -222,8 +236,15 @@ export async function fetchLiveAnnouncements(courses = [], sesskey = null) {
         if (seenForumUrls.has(forumUrl)) continue;
         seenForumUrls.add(forumUrl);
 
-        const forumRes = await fetch(forumUrl, { credentials: "include" });
-        if (!forumRes.ok) continue;
+        const fCtrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+        const fTid = fCtrl ? setTimeout(() => fCtrl.abort(), 4000) : null;
+        let forumRes;
+        try {
+          forumRes = await fetch(forumUrl, { credentials: "include", signal: fCtrl?.signal });
+        } finally {
+          if (fTid) clearTimeout(fTid);
+        }
+        if (!forumRes || !forumRes.ok) continue;
 
         const forumHtml = await forumRes.text();
         const discussions = parseForumDiscussions(forumHtml, course.code || course.shortname || "Course");
@@ -233,12 +254,21 @@ export async function fetchLiveAnnouncements(courses = [], sesskey = null) {
           d.courseName = course.name;
         });
 
-        allAnnouncements.push(...discussions);
+        courseAnnouncements.push(...discussions);
       }
+      return courseAnnouncements;
     } catch (err) {
       console.warn(`[Spectra] Could not load announcements for course ${course.code}:`, err);
+      return [];
     }
-  }
+  });
+
+  const settled = await Promise.allSettled(coursePromises);
+  settled.forEach((res) => {
+    if (res.status === "fulfilled" && Array.isArray(res.value)) {
+      allAnnouncements.push(...res.value);
+    }
+  });
 
   // Deduplicate by announcement ID
   const seenIds = new Set();

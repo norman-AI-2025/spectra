@@ -431,6 +431,13 @@ function switchTab(tabName) {
     activePanel.classList.add("active");
   }
 
+  if (tabName === "deadlines") {
+    renderDeadlines();
+    if (state.deadlines.length === 0 && state.isAuthenticated) {
+      loadLiveDeadlines();
+    }
+  }
+
   if (tabName === "announcements") {
     populateAnnouncementSubjectDropdown();
     renderAnnouncements();
@@ -445,8 +452,16 @@ function switchTab(tabName) {
     renderAttendanceSummaryMetrics();
     renderOpenAttendanceBanner();
     renderAttendanceRecords();
-    if (state.isAuthenticated) {
-      loadLiveAttendanceData(true);
+    if (state.isAuthenticated && !state.attendance) {
+      loadLiveAttendanceData(false);
+    }
+  }
+
+  if (tabName === "materials") {
+    updateFolderPreview();
+    renderWeekPills();
+    if (state.selectedCourse && state.weekMaterials.slides.length === 0 && state.weekMaterials.tutorials.length === 0 && state.weekMaterials.labs.length === 0 && state.isAuthenticated) {
+      loadLiveWeekMaterials();
     }
   }
 }
@@ -653,15 +668,44 @@ function hydrateDeadlinesFromScrape(events = [], rawCalendarEvents = []) {
     });
   } else if (Array.isArray(events) && events.length > 0) {
     state.deadlines = events.map((ev, idx) => {
+      // Check if already in standard live deadline format
+      if (ev && (ev.title !== undefined || ev.name !== undefined) && (ev.dueTimestamp || ev.dueDate)) {
+        const timestamp = ev.dueTimestamp || (ev.dueDate ? Date.parse(ev.dueDate) : Date.now());
+        const eventId = String(ev.id || `deadline-${idx}`);
+        const isSubmittedOnSpectrum = Boolean(ev.isSubmittedOnSpectrum);
+        return {
+          ...ev,
+          id: eventId,
+          title: cleanMoodleTitle(ev.title || ev.name || ""),
+          courseCode: ev.courseCode || "N/A",
+          courseName: ev.courseName || ev.courseCode || "N/A",
+          dueDate: ev.dueDate || new Date(timestamp).toISOString(),
+          dueTimestamp: timestamp,
+          formattedTime: ev.formattedTime || new Date(timestamp).toLocaleString("en-MY", {
+            month: "short",
+            day: "numeric",
+            hour: "2-digit",
+            minute: "2-digit"
+          }),
+          url: ev.url || "https://spectrum.um.edu.my/calendar/view.php",
+          type: ev.type || "assign",
+          urgency: calculateUrgency(timestamp),
+          isSubmittedOnSpectrum,
+          isCompleted: isSubmittedOnSpectrum || state.completedIds.has(eventId),
+          weight: ev.weight || ""
+        };
+      }
+
+      // Old table scraper format
       const dueTs = Date.parse(ev["Due Date"]) || (Date.now() + 86400000);
       const isSubmitted = ev["Submitted?"] === "Submitted";
-      const id = `scraped-${idx}-${ev["Assignment / Task"]}`;
-      const code = extractCourseCode(ev["Course Code"]) || ev["Course Code"];
+      const id = `scraped-${idx}-${ev["Assignment / Task"] || idx}`;
+      const code = extractCourseCode(ev["Course Code"] || "") || ev["Course Code"] || "N/A";
 
       return {
         id,
-        title: cleanMoodleTitle(ev["Assignment / Task"]),
-        courseCode: code || "N/A",
+        title: cleanMoodleTitle(ev["Assignment / Task"] || "Assignment"),
+        courseCode: code,
         courseName: ev["Course Code"] || code,
         dueDate: new Date(dueTs).toISOString(),
         dueTimestamp: dueTs,
@@ -684,6 +728,9 @@ function hydrateDeadlinesFromScrape(events = [], rawCalendarEvents = []) {
     return a.dueTimestamp - b.dueTimestamp;
   });
 
+  const loadingEl = document.getElementById("deadlinesLoading");
+  if (loadingEl) loadingEl.classList.add("hidden");
+
   updateUrgentCountBadge();
   renderDeadlines();
 }
@@ -698,24 +745,26 @@ async function hydrateCoursesFromScrape(courses = [], rawCourses = []) {
 
   if (Array.isArray(rawCourses) && rawCourses.length > 0) {
     state.courses = rawCourses.map((c) => {
-      const code = extractCourseCode(c.shortname || c.fullname);
+      const code = extractCourseCode(c.shortname || c.fullname || "");
       return {
         id: String(c.id),
-        code,
-        name: c.fullname,
+        code: code || "Course",
+        name: c.fullname || code,
         shortname: c.shortname || code,
         url: c.viewurl || `https://spectrum.um.edu.my/course/view.php?id=${c.id}`
       };
     });
   } else if (Array.isArray(courses) && courses.length > 0) {
     state.courses = courses.map((c) => {
-      const code = extractCourseCode(c["Code"] || c["Course Name"]);
+      const code = c.code || extractCourseCode(c["Code"] || c["Course Name"] || c.shortname || c.fullname || "");
+      const name = c.name || c["Course Name"] || c.fullname || code;
+      const id = String(c.id || c["ID"] || "");
       return {
-        id: String(c["ID"] || ""),
-        code: code || c["Code"],
-        name: c["Course Name"] || c["Code"],
-        shortname: c["Code"] || code,
-        url: c["URL"] || `https://spectrum.um.edu.my/course/view.php?id=${c["ID"]}`
+        id,
+        code: code || "Course",
+        name: name || code,
+        shortname: c.shortname || code,
+        url: c.url || c.viewurl || c["URL"] || `https://spectrum.um.edu.my/course/view.php?id=${id}`
       };
     });
   } else {
@@ -745,6 +794,11 @@ async function hydrateCoursesFromScrape(courses = [], rawCourses = []) {
   updateFolderPreview();
   renderWeekPills();
   populateAnnouncementSubjectDropdown();
+  populateAttendanceCourseDropdowns();
+
+  const loading = document.getElementById("materialsLoading");
+  if (loading) loading.classList.add("hidden");
+
   await loadLiveWeekMaterials();
 }
 
@@ -972,15 +1026,19 @@ async function syncLiveSession() {
         "cached_courses",
         "cached_raw_events",
         "cached_raw_courses",
+        "cached_announcements",
+        "cached_attendance",
         "verifiedSesskey",
-        "userName"
+        "userName",
+        "userAvatarUrl"
       ]);
       manualToken = (stored.manualMoodleSession || stored.manual_moodle_session || "").trim();
 
       // If we have cached scraped data, pre-hydrate the UI immediately for instant responsiveness!
       if (stored.userName) {
         state.userName = stored.userName;
-        updateUserIdentityUI(stored.userName, "");
+        state.userAvatarUrl = stored.userAvatarUrl || "";
+        updateUserIdentityUI(stored.userName, state.userAvatarUrl);
         const studentDisplay = document.getElementById("studentNameDisplay");
         if (studentDisplay) studentDisplay.textContent = stored.userName;
       }
@@ -991,14 +1049,35 @@ async function syncLiveSession() {
         updateSessionIndicator("connected", "Connected");
         const sesskeyEl = document.getElementById("sesskeyDisplay");
         if (sesskeyEl) sesskeyEl.textContent = `${stored.verifiedSesskey.substring(0, 5)}••••••`;
+        updateInlineNoticeCards(true);
+        setDisconnectedViewState(false);
+      }
+      if ((stored.cached_raw_courses && stored.cached_raw_courses.length > 0) || (stored.cached_courses && stored.cached_courses.length > 0)) {
+        await hydrateCoursesFromScrape(stored.cached_courses, stored.cached_raw_courses);
       }
       if ((stored.cached_raw_events && stored.cached_raw_events.length > 0) || (stored.cached_deadlines && stored.cached_deadlines.length > 0)) {
         hydrateDeadlinesFromScrape(stored.cached_deadlines, stored.cached_raw_events);
       }
-      if ((stored.cached_raw_courses && stored.cached_raw_courses.length > 0) || (stored.cached_courses && stored.cached_courses.length > 0)) {
-        hydrateCoursesFromScrape(stored.cached_courses, stored.cached_raw_courses);
+      if (Array.isArray(stored.cached_announcements) && stored.cached_announcements.length > 0) {
+        state.announcements = stored.cached_announcements;
+        populateAnnouncementSubjectDropdown();
+        renderAnnouncements();
+        const annLoad = document.getElementById("announcementsLoading");
+        if (annLoad) annLoad.classList.add("hidden");
       }
-    } catch (e) {}
+      if (stored.cached_attendance && stored.cached_attendance.courses?.length > 0) {
+        state.attendance = stored.cached_attendance;
+        populateAttendanceCourseDropdowns();
+        renderAttendanceSummaryMetrics();
+        renderActiveOccurrenceBadges();
+        renderOpenAttendanceBanner();
+        renderAttendanceRecords();
+        const attLoad = document.getElementById("attendanceLoading");
+        if (attLoad) attLoad.classList.add("hidden");
+      }
+    } catch (e) {
+      console.warn("[Spectra] Error loading cached data from storage:", e);
+    }
   }
 
   // Populate input field if present in storage
@@ -1044,21 +1123,19 @@ async function syncLiveSession() {
     const sesskeyEl = document.getElementById("sesskeyDisplay");
     if (sesskeyEl) sesskeyEl.textContent = `${sessionContext.sesskey.substring(0, 5)}••••••`;
 
-    // Connect scraped data or fetch live in parallel for maximum speed!
-    const hasScrapedDeadlines = (sessionContext.rawCalendarEvents && sessionContext.rawCalendarEvents.length > 0) || (sessionContext.events && sessionContext.events.length > 0);
-    const hasScrapedCourses = (sessionContext.rawCourses && sessionContext.rawCourses.length > 0) || (sessionContext.courses && sessionContext.courses.length > 0);
+    // Step 1: Ensure enrolled courses are loaded first
+    if (!state.courses || state.courses.length === 0) {
+      await loadLiveEnrolledCourses();
+    } else {
+      // Non-blocking refresh of courses
+      loadLiveEnrolledCourses().catch((e) => console.warn("[Spectra] Background course refresh notice:", e));
+    }
 
-    const deadlinePromise = hasScrapedDeadlines
-      ? Promise.resolve(hydrateDeadlinesFromScrape(sessionContext.events, sessionContext.rawCalendarEvents))
-      : loadLiveDeadlines();
+    // Step 2: Load live deadlines with populated state.courses
+    await loadLiveDeadlines();
 
-    const coursePromise = hasScrapedCourses
-      ? hydrateCoursesFromScrape(sessionContext.courses, sessionContext.rawCourses)
-      : loadLiveEnrolledCourses();
-
-    const announcementPromise = loadLiveAnnouncements();
-
-    await Promise.allSettled([deadlinePromise, coursePromise, announcementPromise]);
+    // Step 3: Announcements & Attendance can be refreshed non-blocking in background
+    loadLiveAnnouncements().catch((e) => console.warn("[Spectra] Background announcements notice:", e));
 
   } catch (err) {
     console.warn("[Spectra] Live session authentication check:", err);
@@ -1144,8 +1221,10 @@ async function loadLiveDeadlines() {
   const listEl = document.getElementById("deadlinesList");
   const emptyEl = document.getElementById("deadlinesEmptyState");
 
-  if (loadingEl) loadingEl.classList.remove("hidden");
-  if (listEl) listEl.innerHTML = "";
+  // Only show the loading spinner if we don't already have deadlines rendered!
+  if (state.deadlines.length === 0 && (!listEl || listEl.children.length === 0)) {
+    if (loadingEl) loadingEl.classList.remove("hidden");
+  }
   if (emptyEl) emptyEl.classList.add("hidden");
 
   try {
@@ -1156,6 +1235,10 @@ async function loadLiveDeadlines() {
       if (a.isCompleted !== b.isCompleted) return a.isCompleted ? 1 : -1;
       return a.dueTimestamp - b.dueTimestamp;
     });
+
+    if (typeof chrome !== "undefined" && chrome.storage?.local && liveEvents.length > 0) {
+      await chrome.storage.local.set({ cached_deadlines: liveEvents });
+    }
 
     updateUrgentCountBadge();
     renderDeadlines();
@@ -1168,7 +1251,9 @@ async function loadLiveDeadlines() {
       renderUnauthenticatedStates(false);
       showToast("Session Expired. Please update your MoodleSession cookie in Settings.", "error");
     } else {
-      showToast(`Error querying calendar: ${err.message}`, "error");
+      if (state.deadlines.length === 0) {
+        showToast(`Error querying calendar: ${err.message}`, "error");
+      }
     }
   } finally {
     if (loadingEl) loadingEl.classList.add("hidden");
@@ -1354,8 +1439,10 @@ async function loadLiveAnnouncements() {
   const listEl = document.getElementById("announcementsList");
   const emptyEl = document.getElementById("announcementsEmptyState");
 
-  if (loadingEl) loadingEl.classList.remove("hidden");
-  if (listEl) listEl.innerHTML = "";
+  // Only show loading spinner if we don't already have announcements rendered!
+  if (state.announcements.length === 0 && (!listEl || listEl.children.length === 0)) {
+    if (loadingEl) loadingEl.classList.remove("hidden");
+  }
   if (emptyEl) emptyEl.classList.add("hidden");
 
   try {
@@ -1369,10 +1456,14 @@ async function loadLiveAnnouncements() {
       }
       if (Array.isArray(stored.cached_announcements) && stored.cached_announcements.length > 0) {
         announcements = stored.cached_announcements;
+        state.announcements = announcements;
+        populateAnnouncementSubjectDropdown();
+        renderAnnouncements();
+        if (loadingEl) loadingEl.classList.add("hidden");
       }
     }
 
-    // 2. If no cached announcements or on demand, fetch live
+    // 2. If no cached announcements, fetch live
     if (announcements.length === 0) {
       if (state.courses && state.courses.length > 0) {
         announcements = await fetchLiveAnnouncements(state.courses, state.sesskey);
@@ -1390,18 +1481,20 @@ async function loadLiveAnnouncements() {
       if (typeof chrome !== "undefined" && chrome.storage?.local && announcements.length > 0) {
         await chrome.storage.local.set({ cached_announcements: announcements });
       }
-    }
 
-    state.announcements = announcements;
-    populateAnnouncementSubjectDropdown();
-    renderAnnouncements();
+      state.announcements = announcements;
+      populateAnnouncementSubjectDropdown();
+      renderAnnouncements();
+    }
   } catch (err) {
     console.error("[Spectra] Error loading live announcements:", err);
-    if (listEl) listEl.innerHTML = "";
-    if (emptyEl) {
-      emptyEl.classList.remove("hidden");
-      const emptyMsg = document.getElementById("emptyAnnouncementsMsg");
-      if (emptyMsg) emptyMsg.textContent = "Could not fetch announcements from SPeCTRUM forums.";
+    if (state.announcements.length === 0) {
+      if (listEl) listEl.innerHTML = "";
+      if (emptyEl) {
+        emptyEl.classList.remove("hidden");
+        const emptyMsg = document.getElementById("emptyAnnouncementsMsg");
+        if (emptyMsg) emptyMsg.textContent = "Could not fetch announcements from SPeCTRUM forums.";
+      }
     }
   } finally {
     if (loadingEl) loadingEl.classList.add("hidden");
@@ -1542,18 +1635,29 @@ async function loadLiveAttendanceData(force = false) {
   const listEl = document.getElementById("attendanceSessionsList");
   const emptyEl = document.getElementById("attendanceEmptyState");
 
-  if (loadingEl) loadingEl.classList.remove("hidden");
+  // Only show loading spinner if attendance is not yet loaded in state
+  if (!state.attendance) {
+    if (loadingEl) loadingEl.classList.remove("hidden");
+  }
   if (emptyEl) emptyEl.classList.add("hidden");
 
   try {
     let attendanceData = null;
 
-    // 1. Check cached_attendance if not forcing refresh and cache is fresh (< 60s)
+    // 1. Check cached_attendance if not forcing refresh and cache is fresh (< 5 mins)
     if (!force && typeof chrome !== "undefined" && chrome.storage?.local) {
       const stored = await chrome.storage.local.get(["cached_attendance", "last_attendance_sync"]);
       const age = Date.now() - (stored.last_attendance_sync || 0);
-      if (age < 60000 && stored.cached_attendance && stored.cached_attendance.courses?.length > 0) {
+      if (age < 300000 && stored.cached_attendance && stored.cached_attendance.courses?.length > 0) {
         attendanceData = stored.cached_attendance;
+        state.attendance = attendanceData;
+        populateAttendanceCourseDropdowns();
+        renderAttendanceSummaryMetrics();
+        renderActiveOccurrenceBadges();
+        renderOpenAttendanceBanner();
+        renderAttendanceRecords();
+        if (loadingEl) loadingEl.classList.add("hidden");
+        return;
       }
     }
 
@@ -1626,11 +1730,13 @@ async function loadLiveAttendanceData(force = false) {
 
   } catch (err) {
     console.error("[Spectra] Error loading live attendance:", err);
-    if (listEl) listEl.innerHTML = "";
-    if (emptyEl) {
-      emptyEl.classList.remove("hidden");
-      const emptyMsg = document.getElementById("emptyAttendanceMsg");
-      if (emptyMsg) emptyMsg.textContent = "Could not fetch attendance from SPeCTRUM.";
+    if (!state.attendance) {
+      if (listEl) listEl.innerHTML = "";
+      if (emptyEl) {
+        emptyEl.classList.remove("hidden");
+        const emptyMsg = document.getElementById("emptyAttendanceMsg");
+        if (emptyMsg) emptyMsg.textContent = "Could not fetch attendance from SPeCTRUM.";
+      }
     }
   } finally {
     if (loadingEl) loadingEl.classList.add("hidden");
@@ -2140,8 +2246,14 @@ async function loadLiveEnrolledCourses() {
       select.appendChild(opt);
     });
 
+    if (typeof chrome !== "undefined" && chrome.storage?.local && courses.length > 0) {
+      await chrome.storage.local.set({ cached_courses: courses, courses: courses });
+    }
+
     updateFolderPreview();
     renderWeekPills();
+    populateAnnouncementSubjectDropdown();
+    populateAttendanceCourseDropdowns();
     await loadLiveWeekMaterials();
   } catch (err) {
     console.error("[Spectra] Failed loading enrolled courses:", err);

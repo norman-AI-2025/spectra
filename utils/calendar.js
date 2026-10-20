@@ -100,70 +100,7 @@ export async function fetchLiveDeadlines(sesskey, courses = [], occurrencesMap =
   const deadlinesMap = new Map();
 
   // -------------------------------------------------------------
-  // 1. Fetch Course-Specific Submission Pages (/mod/assign/index.php & /course/view.php)
-  //    Checks every submission page and filters by student's respective occurrence,
-  //    catching dropboxes whether at the top, middle, or bottom of the page.
-  // -------------------------------------------------------------
-  if (Array.isArray(courses) && courses.length > 0) {
-    const coursePromises = courses.map(async (course) => {
-      const courseId = course.id;
-      const courseCode = course.code || course.shortname || extractCourseCode(course.name) || "Course";
-      const courseName = course.name || courseCode;
-      const studentOcc = occurrencesMap[courseId] || occurrencesMap[courseCode] || defaultOccurrence || "";
-
-      // A. Check /mod/assign/index.php?id={courseId} (Assignments overview page)
-      try {
-        const assignIndexUrl = `${SPECTRUM_BASE_URL}/mod/assign/index.php?id=${encodeURIComponent(courseId)}`;
-        const res = await fetch(assignIndexUrl, { credentials: "include" });
-        if (res.ok) {
-          const html = await res.text();
-          const items = parseCourseAssignmentsIndex(html, courseCode, courseName, studentOcc);
-          items.forEach((item) => {
-            const key = getActivityKey(item);
-            deadlinesMap.set(key, item);
-          });
-        }
-      } catch (err) {
-        console.warn(`[Spectra] Error checking assign index for ${courseCode}:`, err);
-      }
-
-      // B. Check /course/view.php?id={courseId} (Full course page scanned top to bottom for quizzes, workshops, Turnitin, and bottom dropboxes)
-      try {
-        const courseViewUrl = `${SPECTRUM_BASE_URL}/course/view.php?id=${encodeURIComponent(courseId)}`;
-        const res = await fetch(courseViewUrl, { credentials: "include" });
-        if (res.ok) {
-          const html = await res.text();
-          const items = parseCourseViewSubmissions(html, courseCode, courseName, studentOcc);
-          items.forEach((item) => {
-            const key = getActivityKey(item);
-            if (deadlinesMap.has(key)) {
-              // Merge with existing assignment info if this has extra details
-              const existing = deadlinesMap.get(key);
-              if (!existing.dueTimestamp && item.dueTimestamp) {
-                existing.dueTimestamp = item.dueTimestamp;
-                existing.dueDate = item.dueDate;
-                existing.formattedTime = item.formattedTime;
-              }
-              if (item.isSubmittedOnSpectrum) {
-                existing.isSubmittedOnSpectrum = true;
-                existing.isCompleted = true;
-                existing.submissionStatus = "Submitted";
-              }
-            } else {
-              deadlinesMap.set(key, item);
-            }
-          });
-        }
-      } catch (err) {
-        console.warn(`[Spectra] Error checking course view submissions for ${courseCode}:`, err);
-      }
-    });
-
-    await Promise.allSettled(coursePromises);
-  }
-
-  // -------------------------------------------------------------
-  // 2. Fetch Native SPeCTRUM AJAX Calendar Service / Upcoming Events
+  // 1. Fetch Native SPeCTRUM AJAX Calendar Service / Upcoming Events First (Fastest)
   // -------------------------------------------------------------
   let eventsData = null;
   if (sesskey) {
@@ -182,15 +119,23 @@ export async function fetchLiveDeadlines(sesskey, courses = [], occurrencesMap =
     ];
 
     try {
-      const res = await fetch(ajaxEndpoint, {
-        method: "POST",
-        credentials: "include",
-        headers: {
-          "Content-Type": "application/json",
-          "Accept": "application/json"
-        },
-        body: JSON.stringify(payload)
-      });
+      const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+      const timeoutId = controller ? setTimeout(() => controller.abort(), 6000) : null;
+      let res;
+      try {
+        res = await fetch(ajaxEndpoint, {
+          method: "POST",
+          credentials: "include",
+          signal: controller?.signal,
+          headers: {
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+          },
+          body: JSON.stringify(payload)
+        });
+      } finally {
+        if (timeoutId) clearTimeout(timeoutId);
+      }
 
       if (res.status === 401 || res.status === 403) {
         if (typeof chrome !== "undefined" && chrome.storage?.local) {
@@ -226,19 +171,27 @@ export async function fetchLiveDeadlines(sesskey, courses = [], occurrencesMap =
   // Fallback: live HTML scrape of /calendar/view.php?view=upcoming if AJAX gave no data
   if (!eventsData && deadlinesMap.size === 0) {
     try {
-      const htmlRes = await fetch(`${SPECTRUM_BASE_URL}/calendar/view.php?view=upcoming`, {
-        method: "GET",
-        credentials: "include"
-      });
+      const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+      const timeoutId = controller ? setTimeout(() => controller.abort(), 5000) : null;
+      let htmlRes;
+      try {
+        htmlRes = await fetch(`${SPECTRUM_BASE_URL}/calendar/view.php?view=upcoming`, {
+          method: "GET",
+          credentials: "include",
+          signal: controller?.signal
+        });
+      } finally {
+        if (timeoutId) clearTimeout(timeoutId);
+      }
 
-      if (htmlRes.redirected && (htmlRes.url.includes("login") || htmlRes.url.includes("microsoftonline"))) {
+      if (htmlRes && htmlRes.redirected && (htmlRes.url.includes("login") || htmlRes.url.includes("microsoftonline"))) {
         if (typeof chrome !== "undefined" && chrome.storage?.local) {
           await chrome.storage.local.set({ sessionStatus: "expired" });
         }
         throw new InvalidSessionError("Redirected to login portal.");
       }
 
-      if (htmlRes.ok) {
+      if (htmlRes && htmlRes.ok) {
         const html = await htmlRes.text();
         const rawEvents = parseCalendarEvents(html);
         rawEvents.forEach((evt) => {
@@ -296,21 +249,92 @@ export async function fetchLiveDeadlines(sesskey, courses = [], occurrencesMap =
       };
 
       const key = getActivityKey(calItem);
-      if (deadlinesMap.has(key)) {
-        const existing = deadlinesMap.get(key);
-        // Enrich with exact calendar timestamp and action state
-        existing.dueTimestamp = timestamp;
-        existing.dueDate = calItem.dueDate;
-        existing.formattedTime = calItem.formattedTime;
-        if (isSubmittedOnSpectrum) {
-          existing.isSubmittedOnSpectrum = true;
-          existing.isCompleted = true;
-          existing.submissionStatus = "Submitted";
-        }
-      } else {
-        deadlinesMap.set(key, calItem);
-      }
+      deadlinesMap.set(key, calItem);
     }
+  }
+
+  // -------------------------------------------------------------
+  // 2. Fetch Course-Specific Submission Pages (/mod/assign/index.php & /course/view.php)
+  //    Enriches calendar data and catches dropboxes whether at the top, middle, or bottom of the page.
+  // -------------------------------------------------------------
+  if (Array.isArray(courses) && courses.length > 0) {
+    const coursePromises = courses.map(async (course) => {
+      const courseId = course.id;
+      const courseCode = course.code || course.shortname || extractCourseCode(course.name) || "Course";
+      const courseName = course.name || courseCode;
+      const studentOcc = occurrencesMap[courseId] || occurrencesMap[courseCode] || defaultOccurrence || "";
+
+      // A. Check /mod/assign/index.php?id={courseId} (Assignments overview page)
+      try {
+        const assignIndexUrl = `${SPECTRUM_BASE_URL}/mod/assign/index.php?id=${encodeURIComponent(courseId)}`;
+        const ctrl1 = typeof AbortController !== "undefined" ? new AbortController() : null;
+        const tid1 = ctrl1 ? setTimeout(() => ctrl1.abort(), 4000) : null;
+        let res;
+        try {
+          res = await fetch(assignIndexUrl, { credentials: "include", signal: ctrl1?.signal });
+        } finally {
+          if (tid1) clearTimeout(tid1);
+        }
+        if (res && res.ok) {
+          const html = await res.text();
+          const items = parseCourseAssignmentsIndex(html, courseCode, courseName, studentOcc);
+          items.forEach((item) => {
+            const key = getActivityKey(item);
+            if (deadlinesMap.has(key)) {
+              const existing = deadlinesMap.get(key);
+              if (item.isSubmittedOnSpectrum) {
+                existing.isSubmittedOnSpectrum = true;
+                existing.isCompleted = true;
+                existing.submissionStatus = "Submitted";
+              }
+            } else {
+              deadlinesMap.set(key, item);
+            }
+          });
+        }
+      } catch (err) {
+        console.warn(`[Spectra] Error checking assign index for ${courseCode}:`, err);
+      }
+
+      // B. Check /course/view.php?id={courseId} (Full course page scanned top to bottom for quizzes, workshops, Turnitin, and bottom dropboxes)
+      try {
+        const courseViewUrl = `${SPECTRUM_BASE_URL}/course/view.php?id=${encodeURIComponent(courseId)}`;
+        const ctrl2 = typeof AbortController !== "undefined" ? new AbortController() : null;
+        const tid2 = ctrl2 ? setTimeout(() => ctrl2.abort(), 4000) : null;
+        let res;
+        try {
+          res = await fetch(courseViewUrl, { credentials: "include", signal: ctrl2?.signal });
+        } finally {
+          if (tid2) clearTimeout(tid2);
+        }
+        if (res && res.ok) {
+          const html = await res.text();
+          const items = parseCourseViewSubmissions(html, courseCode, courseName, studentOcc);
+          items.forEach((item) => {
+            const key = getActivityKey(item);
+            if (deadlinesMap.has(key)) {
+              const existing = deadlinesMap.get(key);
+              if (!existing.dueTimestamp && item.dueTimestamp) {
+                existing.dueTimestamp = item.dueTimestamp;
+                existing.dueDate = item.dueDate;
+                existing.formattedTime = item.formattedTime;
+              }
+              if (item.isSubmittedOnSpectrum) {
+                existing.isSubmittedOnSpectrum = true;
+                existing.isCompleted = true;
+                existing.submissionStatus = "Submitted";
+              }
+            } else {
+              deadlinesMap.set(key, item);
+            }
+          });
+        }
+      } catch (err) {
+        console.warn(`[Spectra] Error checking course view submissions for ${courseCode}:`, err);
+      }
+    });
+
+    await Promise.allSettled(coursePromises);
   }
 
   // -------------------------------------------------------------

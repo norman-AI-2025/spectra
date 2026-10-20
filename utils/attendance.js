@@ -45,47 +45,68 @@ export async function fetchCourseAttendance({ courseId, courseCode = "UM", sessk
     }
   }
 
-  // A. Check /mod/attendance/index.php
-  try {
-    const indexRes = await fetch(`${SPECTRUM_BASE_URL}/mod/attendance/index.php?id=${encodeURIComponent(courseId)}`, {
-      method: "GET",
-      credentials: "include"
-    });
+  // A & B: Discover attendance via index and course view concurrently with timeouts
+  const fetchIndex = async () => {
+    try {
+      const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+      const tid = ctrl ? setTimeout(() => ctrl.abort(), 5000) : null;
+      let indexRes;
+      try {
+        indexRes = await fetch(`${SPECTRUM_BASE_URL}/mod/attendance/index.php?id=${encodeURIComponent(courseId)}`, {
+          method: "GET",
+          credentials: "include",
+          signal: ctrl?.signal
+        });
+      } finally {
+        if (tid) clearTimeout(tid);
+      }
 
-    if (indexRes.redirected && indexRes.url.includes("login")) {
-      throw new InvalidSessionError("SPeCTRUM session expired while loading attendance index.");
+      if (indexRes && indexRes.redirected && indexRes.url.includes("login")) {
+        throw new InvalidSessionError("SPeCTRUM session expired while loading attendance index.");
+      }
+
+      if (indexRes && indexRes.ok) {
+        const indexHtml = await indexRes.text();
+        const instances = parseAttendanceIndex(indexHtml);
+        instances.forEach(addInstance);
+      }
+    } catch (err) {
+      if (err instanceof InvalidSessionError || err.name === "INVALID_SESSION") throw err;
+      console.warn(`[Spectra] Could not discover attendance via index for course ${courseId}:`, err);
     }
+  };
 
-    if (indexRes.ok) {
-      const indexHtml = await indexRes.text();
-      const instances = parseAttendanceIndex(indexHtml);
-      instances.forEach(addInstance);
+  const fetchView = async () => {
+    try {
+      const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+      const tid = ctrl ? setTimeout(() => ctrl.abort(), 5000) : null;
+      let courseRes;
+      try {
+        courseRes = await fetch(`${SPECTRUM_BASE_URL}/course/view.php?id=${encodeURIComponent(courseId)}`, {
+          method: "GET",
+          credentials: "include",
+          signal: ctrl?.signal
+        });
+      } finally {
+        if (tid) clearTimeout(tid);
+      }
+
+      if (courseRes && courseRes.redirected && courseRes.url.includes("login")) {
+        throw new InvalidSessionError("SPeCTRUM session expired while loading course view.");
+      }
+
+      if (courseRes && courseRes.ok) {
+        const courseHtml = await courseRes.text();
+        const courseInstances = parseAttendanceIndex(courseHtml);
+        courseInstances.forEach(addInstance);
+      }
+    } catch (err) {
+      if (err instanceof InvalidSessionError || err.name === "INVALID_SESSION") throw err;
+      console.warn(`[Spectra] Fallback course view scrape failed for course ${courseId}:`, err);
     }
-  } catch (err) {
-    if (err instanceof InvalidSessionError || err.name === "INVALID_SESSION") throw err;
-    console.warn(`[Spectra] Could not discover attendance via index for course ${courseId}:`, err);
-  }
+  };
 
-  // B. Also scrape /course/view.php?id=... (captures attendance activities at bottom of page or in weekly sections)
-  try {
-    const courseRes = await fetch(`${SPECTRUM_BASE_URL}/course/view.php?id=${encodeURIComponent(courseId)}`, {
-      method: "GET",
-      credentials: "include"
-    });
-
-    if (courseRes.redirected && courseRes.url.includes("login")) {
-      throw new InvalidSessionError("SPeCTRUM session expired while loading course view.");
-    }
-
-    if (courseRes.ok) {
-      const courseHtml = await courseRes.text();
-      const courseInstances = parseAttendanceIndex(courseHtml);
-      courseInstances.forEach(addInstance);
-    }
-  } catch (err) {
-    if (err instanceof InvalidSessionError || err.name === "INVALID_SESSION") throw err;
-    console.warn(`[Spectra] Fallback course view scrape failed for course ${courseId}:`, err);
-  }
+  await Promise.allSettled([fetchIndex(), fetchView()]);
 
   if (discoveredInstances.length === 0) {
     // Course does not have an active mod_attendance module on SPeCTRUM
@@ -130,11 +151,18 @@ export async function fetchCourseAttendance({ courseId, courseCode = "UM", sessk
     if (fetchedUrls.has(url)) return null;
     fetchedUrls.add(url);
     try {
-      const res = await fetch(url, { method: "GET", credentials: "include" });
-      if (res.redirected && res.url.includes("login")) {
+      const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+      const tid = ctrl ? setTimeout(() => ctrl.abort(), 4500) : null;
+      let res;
+      try {
+        res = await fetch(url, { method: "GET", credentials: "include", signal: ctrl?.signal });
+      } finally {
+        if (tid) clearTimeout(tid);
+      }
+      if (res && res.redirected && res.url.includes("login")) {
         throw new InvalidSessionError("SPeCTRUM session expired while loading attendance view.");
       }
-      if (!res.ok) return null;
+      if (!res || !res.ok) return null;
       return await res.text();
     } catch (e) {
       if (e instanceof InvalidSessionError || e.name === "INVALID_SESSION") throw e;
