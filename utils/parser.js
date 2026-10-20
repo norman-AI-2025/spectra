@@ -540,20 +540,22 @@ export function calculateAcademicWeek(semesterStartDateStr = null) {
 /**
  * Matches a session's group/type string against a student's configured occurrence
  */
-export function matchesOccurrence(sessionGroup, studentOccurrence, sessionDescription = "") {
-  return isRespectiveOccurrence(sessionGroup, studentOccurrence, sessionDescription);
+export function matchesOccurrence(sessionGroup, studentOccurrence, sessionDescription = "", activityName = "") {
+  return isRespectiveOccurrence(sessionGroup, studentOccurrence, sessionDescription, activityName);
 }
 
 /**
  * Strict occurrence checker:
  * Ensures attendance is only filled/recorded for the student's respective occurrence.
  * - Universal groups ("All students", "Semua pelajar", empty) match everyone.
- * - If session specifies a group (e.g. "Occ 1", "Occ 2") or mentions it in description, student must have configured that exact occurrence.
+ * - If session or activityName specifies a group (e.g. "Occ 1", "Occ 2") or mentions it in description,
+ *   student must have configured that exact occurrence.
  * - If student has NOT configured an occurrence, group-specific sessions will NOT match.
  */
-export function isRespectiveOccurrence(sessionGroup, studentOccurrence, sessionDescription = "") {
+export function isRespectiveOccurrence(sessionGroup, studentOccurrence, sessionDescription = "", activityName = "") {
   const group = (sessionGroup || "").trim().toLowerCase();
   const desc = (sessionDescription || "").trim().toLowerCase();
+  const actName = (activityName || "").trim().toLowerCase();
   const occ = (studentOccurrence || "").trim().toLowerCase();
 
   // If student occurrence is 'all', matches everything
@@ -561,7 +563,19 @@ export function isRespectiveOccurrence(sessionGroup, studentOccurrence, sessionD
     return true;
   }
 
-  // Detect if group or description specifies a specific occurrence or group number
+  // 1. If activityName explicitly declares a specific occurrence (e.g. "Tutorial Attendance Occ 2", "Attendance - Group 1")
+  const actHasOcc = actName && (/\bocc(?:urrence)?\s*\d+\b/i.test(actName) || /\bkumpulan\s*\d+\b/i.test(actName) || /\bgroup\s*\d+\b/i.test(actName));
+  if (actHasOcc) {
+    if (!occ) return false;
+    const occDigits = occ.match(/\b\d+\b/) || occ.match(/\d+/);
+    const actDigits = actName.match(/\b\d+\b/) || actName.match(/\d+/);
+    if (occDigits && actDigits && occDigits[0] !== actDigits[0]) {
+      // Activity specifically belongs to another occurrence!
+      return false;
+    }
+  }
+
+  // 2. Detect if group or description specifies a specific occurrence or group number
   const groupIsUniversal = !group || group.includes("all students") || group.includes("semua pelajar") || group === "all";
   const descHasOcc = desc && (/\bocc(?:urrence)?\s*\d+\b/i.test(desc) || /\bkumpulan\s*\d+\b/i.test(desc) || /\bgroup\s*\d+\b/i.test(desc));
 
@@ -571,9 +585,11 @@ export function isRespectiveOccurrence(sessionGroup, studentOccurrence, sessionD
     targetText = group;
   } else if (descHasOcc) {
     targetText = desc;
+  } else if (actHasOcc) {
+    targetText = actName;
   }
 
-  // Universal session (no specific group or occurrence in group or description)
+  // Universal session (no specific group or occurrence in group, description, or activity name)
   if (!targetText) {
     return true;
   }
@@ -598,48 +614,149 @@ export function isRespectiveOccurrence(sessionGroup, studentOccurrence, sessionD
 }
 
 /**
- * Parses SPeCTRUM /mod/attendance/index.php?id={courseId}
- * Discovers attendance instances in the course.
+ * Parses SPeCTRUM /mod/attendance/index.php?id={courseId} or course view
+ * Discovers ALL attendance instances in the course, from top to bottom of page.
  */
 export function parseAttendanceIndex(html) {
   if (!html) return [];
   const links = [];
+  const seenCmids = new Set();
+
+  function addInstance(cmid, name, rawUrl) {
+    if (!cmid || seenCmids.has(cmid)) return;
+    seenCmids.add(cmid);
+    const fullUrl = rawUrl.startsWith("http") ? rawUrl : `https://spectrum.um.edu.my/${rawUrl.replace(/^\//, "")}`;
+    links.push({
+      cmid: String(cmid),
+      name: (name || "Attendance").trim().replace(/^(Activity|Aktiviti)\s+/i, ""),
+      url: fullUrl
+    });
+  }
 
   if (typeof DOMParser !== "undefined") {
     try {
       const parser = new DOMParser();
       const doc = parser.parseFromString(html, "text/html");
+
+      // 1. Look for view.php links anywhere on the page
       const aEls = doc.querySelectorAll("a[href*='mod/attendance/view.php']");
       aEls.forEach((a) => {
         const href = a.getAttribute("href") || "";
         const idMatch = href.match(/id=(\d+)/);
         if (idMatch) {
-          links.push({
-            cmid: idMatch[1],
-            name: a.textContent.trim() || "Attendance",
-            url: href.startsWith("http") ? href : `https://spectrum.um.edu.my/${href.replace(/^\//, "")}`
-          });
+          const text = a.textContent.trim() || a.getAttribute("title") || "Attendance";
+          addInstance(idMatch[1], text, href);
         }
       });
+
+      // 2. Look for modtype_attendance containers across all sections (top to bottom)
+      const actContainers = doc.querySelectorAll(".modtype_attendance, li.activity.attendance, div.activityinstance");
+      actContainers.forEach((el) => {
+        const a = el.querySelector("a[href*='mod/attendance/']");
+        if (a) {
+          const href = a.getAttribute("href") || "";
+          const idMatch = href.match(/id=(\d+)/);
+          if (idMatch) {
+            const text = a.textContent.trim() || el.querySelector(".instancename")?.textContent?.trim() || "Attendance";
+            addInstance(idMatch[1], text, href);
+          }
+        }
+      });
+
       if (links.length > 0) return links;
     } catch (e) {}
   }
 
   // Regex fallback
-  const regex = /<a[^>]+href=["']([^"']*mod\/attendance\/view\.php\?id=(\d+)[^"']*)["'][^>]*>(.*?)<\/a>/gi;
+  const regex = /<a[^>]+href=["']([^"']*mod\/attendance\/view\.php\?id=(\d+)[^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi;
   let match;
-  const seen = new Set();
   while ((match = regex.exec(html)) !== null) {
     const rawUrl = match[1];
     const cmid = match[2];
-    if (!seen.has(cmid)) {
-      seen.add(cmid);
-      const name = match[3].replace(/<[^>]+>/g, "").trim() || "Attendance";
-      const fullUrl = rawUrl.startsWith("http") ? rawUrl : `https://spectrum.um.edu.my/${rawUrl.replace(/^\//, "")}`;
-      links.push({ cmid, name, url: fullUrl });
+    const name = match[3].replace(/<[^>]+>/g, "").trim() || "Attendance";
+    addInstance(cmid, name, rawUrl);
+  }
+
+  return links;
+}
+
+/**
+ * Parses all attendance tabs and group selectors from SPeCTRUM /mod/attendance/view.php
+ * Extracts:
+ * - View mode tabs (All [view=5], All Past [view=4], Months [view=3], Weeks [view=2], Days [view=1])
+ * - Group/occurrence tabs and dropdown options (e.g. Occ 1, Occ 2, Group 1)
+ */
+export function parseAttendanceTabs(html, cmid, baseUrl = "https://spectrum.um.edu.my") {
+  if (!html) return [];
+  const tabs = [];
+  const seenUrls = new Set();
+
+  function addTab(label, rawUrl, isGroup = false) {
+    if (!rawUrl) return;
+    const fullUrl = rawUrl.startsWith("http") ? rawUrl : `${baseUrl}/${rawUrl.replace(/^\//, "")}`;
+    if (!seenUrls.has(fullUrl)) {
+      seenUrls.add(fullUrl);
+      tabs.push({
+        label: (label || "").trim(),
+        url: fullUrl,
+        isGroup
+      });
     }
   }
-  return links;
+
+  if (typeof DOMParser !== "undefined") {
+    try {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(html, "text/html");
+
+      // Tab navigation: nav-tabs, nav-pills, tabtree, attendance-tabs, ul.nav, etc.
+      const tabLinks = doc.querySelectorAll(
+        ".nav-tabs a, .nav-pills a, .tabtree a, .attendance-tabs a, ul.nav a, a[href*='mod/attendance/view.php']"
+      );
+      tabLinks.forEach((a) => {
+        const href = a.getAttribute("href") || "";
+        const label = a.textContent.trim();
+        if (href && (href.includes("view=") || href.includes("group=") || href.includes("curdate="))) {
+          addTab(label, href, href.includes("group="));
+        }
+      });
+
+      // Group select dropdowns: <select name="group">
+      const groupSelects = doc.querySelectorAll("select[name='group']");
+      groupSelects.forEach((select) => {
+        select.querySelectorAll("option").forEach((opt) => {
+          const val = opt.getAttribute("value");
+          const label = opt.textContent.trim();
+          if (val && val !== "0" && cmid) {
+            addTab(label, `/mod/attendance/view.php?id=${cmid}&group=${val}&view=5`, true);
+          }
+        });
+      });
+
+      if (tabs.length > 0) return tabs;
+    } catch (e) {}
+  }
+
+  // Regex fallback
+  const tabRegex = /<a[^>]+href=["']([^"']*mod\/attendance\/view\.php\?[^"']*(?:view=|group=)[^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  let m;
+  while ((m = tabRegex.exec(html)) !== null) {
+    const rawUrl = m[1];
+    const label = m[2].replace(/<[^>]+>/g, "").trim();
+    addTab(label, rawUrl, rawUrl.includes("group="));
+  }
+
+  const optRegex = /<option[^>]+value=["'](\d+)["'][^>]*>([\s\S]*?)<\/option>/gi;
+  let optM;
+  while ((optM = optRegex.exec(html)) !== null) {
+    const val = optM[1];
+    const label = optM[2].replace(/<[^>]+>/g, "").trim();
+    if (val !== "0" && cmid) {
+      addTab(label, `/mod/attendance/view.php?id=${cmid}&group=${val}&view=5`, true);
+    }
+  }
+
+  return tabs;
 }
 
 /**
@@ -708,7 +825,7 @@ export function isAttendanceSessionPastOrCurrent(dateText, timeText = "", status
  * Extracts session rows, attendance status, open self-recording links, and statistical summaries.
  * STRICT REQUIREMENT: Only includes attendance sessions from the first date till the current date.
  */
-export function parseAttendanceView(html, studentOccurrence = "", referenceDate = new Date()) {
+export function parseAttendanceView(html, studentOccurrence = "", referenceDate = new Date(), activityName = "") {
   if (!html) {
     return {
       summary: { takenSessions: 0, points: "0 / 0", percentage: "0.0%", presentCount: 0, absentCount: 0, lateCount: 0, excusedCount: 0, unrecordedCount: 0 },
@@ -785,7 +902,7 @@ export function parseAttendanceView(html, studentOccurrence = "", referenceDate 
           statusLabel = "Excused";
         }
 
-        const isMatch = matchesOccurrence(groupText, studentOccurrence, descText);
+        const isMatch = matchesOccurrence(groupText, studentOccurrence, descText, activityName);
         const sessionTs = parseAttendanceSessionDate(dateText, timeText);
         const isPastOrCurrent = isAttendanceSessionPastOrCurrent(dateText, timeText, status, referenceDate);
 
@@ -798,6 +915,7 @@ export function parseAttendanceView(html, studentOccurrence = "", referenceDate 
           isPastOrCurrent,
           group: groupText,
           description: descText,
+          activityName,
           status,
           statusLabel,
           points: pointsText,
@@ -881,7 +999,7 @@ export function parseAttendanceView(html, studentOccurrence = "", referenceDate 
         statusLabel = "Excused";
       }
 
-      const isMatch = matchesOccurrence(groupText, studentOccurrence, descText);
+      const isMatch = matchesOccurrence(groupText, studentOccurrence, descText, activityName);
       const sessionTs = parseAttendanceSessionDate(dateText, timeText);
       const isPastOrCurrent = isAttendanceSessionPastOrCurrent(dateText, timeText, status, referenceDate);
 
@@ -894,6 +1012,7 @@ export function parseAttendanceView(html, studentOccurrence = "", referenceDate 
         isPastOrCurrent,
         group: groupText,
         description: descText,
+        activityName,
         status,
         statusLabel,
         points: pointsText,
@@ -939,7 +1058,7 @@ export function parseAttendanceView(html, studentOccurrence = "", referenceDate 
 
   // STRICT REQUIREMENT: Only select openSession if the session is genuinely OPEN and matches the respective occurrence!
   for (const s of pastOrCurrentSessions) {
-    if (s.status === "open" && s.submitUrl && isRespectiveOccurrence(s.group, studentOccurrence, s.description)) {
+    if (s.status === "open" && s.submitUrl && isRespectiveOccurrence(s.group, studentOccurrence, s.description, s.activityName || activityName)) {
       openSession = s;
       break;
     }

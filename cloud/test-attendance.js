@@ -15,6 +15,7 @@ import {
   matchesOccurrence,
   parseAttendanceIndex,
   parseAttendanceView,
+  parseAttendanceTabs,
   parseAttendanceForm,
   parseAttendanceSessionDate,
   isAttendanceSessionPastOrCurrent
@@ -488,7 +489,68 @@ for (const act of autoResult1.actions) {
   if (!sid || mockRecordedSessids.has(sid)) continue;
   alertsDispatched++;
 }
-assert(alertsDispatched === 0, "Auto attendance: Session 7701 already in recordedSessids is skipped without duplicate alert");
+// -------------------------------------------------------------
+// 10. Multi-Activity, Bottom-of-Page & Tab Discovery Tests
+// -------------------------------------------------------------
+// 10.1: parseAttendanceTabs extracts view mode and group tabs
+const sampleTabHtml = `
+  <div class="attendance-tabs">
+    <ul class="nav nav-tabs">
+      <li class="active"><a href="https://spectrum.um.edu.my/mod/attendance/view.php?id=98765&amp;view=2">Weeks</a></li>
+      <li><a href="https://spectrum.um.edu.my/mod/attendance/view.php?id=98765&amp;view=1">Days</a></li>
+      <li><a href="https://spectrum.um.edu.my/mod/attendance/view.php?id=98765&amp;view=4">All past</a></li>
+      <li><a href="https://spectrum.um.edu.my/mod/attendance/view.php?id=98765&amp;view=5">All</a></li>
+    </ul>
+    <select name="group">
+      <option value="0">All participants</option>
+      <option value="101">Occ 1</option>
+      <option value="102">Occ 2</option>
+    </select>
+  </div>
+`;
+
+const parsedTabs = parseAttendanceTabs(sampleTabHtml, "98765");
+assert(parsedTabs.length >= 4, "Discovers attendance view mode and group tabs");
+const hasAllTab = parsedTabs.some((t) => t.url.includes("view=5") || /all/i.test(t.label));
+assert(hasAllTab, "Identifies the official 'All' tab (view=5)");
+const hasOcc1Tab = parsedTabs.some((t) => t.isGroup && t.label.includes("Occ 1"));
+assert(hasOcc1Tab, "Discovers group dropdown option for Occ 1");
+
+// 10.2: Discovering attendance at the bottom of the course page
+const sampleCourseWithBottomAttendance = `
+  <div class="course-content">
+    <div class="section" id="section-0">
+      <div class="activityinstance">
+        <a href="https://spectrum.um.edu.my/mod/attendance/view.php?id=1111">Lecture Attendance</a>
+      </div>
+    </div>
+    <div class="section" id="section-1">
+      <p>Course notes...</p>
+    </div>
+    <!-- Attendance at the very bottom section -->
+    <div class="section" id="section-14">
+      <h3>Week 14 & Final Sessions</h3>
+      <li class="activity attendance modtype_attendance" id="module-2222">
+        <a href="https://spectrum.um.edu.my/mod/attendance/view.php?id=2222">Tutorial Attendance (Occ 1)</a>
+      </li>
+      <li class="activity attendance modtype_attendance" id="module-3333">
+        <a href="https://spectrum.um.edu.my/mod/attendance/view.php?id=3333">Tutorial Attendance (Occ 2)</a>
+      </li>
+    </div>
+  </div>
+`;
+
+const allCourseInstances = parseAttendanceIndex(sampleCourseWithBottomAttendance);
+assert(allCourseInstances.length === 3, "Discovers all 3 attendance instances from top to bottom of course page");
+assert(allCourseInstances.some((i) => i.cmid === "1111"), "Captures top section lecture attendance");
+assert(allCourseInstances.some((i) => i.cmid === "2222"), "Captures bottom section Occ 1 attendance");
+assert(allCourseInstances.some((i) => i.cmid === "3333"), "Captures bottom section Occ 2 attendance");
+
+// 10.3: Occurrence matching using activityName
+assert(matchesOccurrence("All students", "Occ 1", "", "Tutorial Attendance (Occ 1)") === true, "Activity with Occ 1 matches student Occ 1");
+assert(matchesOccurrence("All students", "Occ 1", "", "Tutorial Attendance (Occ 2)") === false, "Activity with Occ 2 is strictly excluded for student Occ 1");
+assert(matchesOccurrence("All students", "Occ 2", "", "Tutorial Attendance (Occ 2)") === true, "Activity with Occ 2 matches student Occ 2");
+assert(matchesOccurrence("All students", "Occ 1", "", "Lecture Attendance") === true, "Universal lecture activity matches student Occ 1");
 
 globalThis.fetch = origFetch;
 

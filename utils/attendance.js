@@ -10,6 +10,7 @@
 import {
   parseAttendanceIndex,
   parseAttendanceView,
+  parseAttendanceTabs,
   parseAttendanceForm,
   matchesOccurrence,
   isRespectiveOccurrence
@@ -20,17 +21,29 @@ import { escapeHtml } from "./telegram.js";
 const SPECTRUM_BASE_URL = "https://spectrum.um.edu.my";
 
 /**
- * Fetch attendance record for a specific enrolled course
+ * Fetch attendance record for a specific enrolled course.
+ * Scrapes all attendance activities across the course (including bottom sections),
+ * reads all attendance tabs (All view=5, All Past, and Occurrence/Group tabs),
+ * and strictly filters sessions according to the student's registered occurrence.
  */
 export async function fetchCourseAttendance({ courseId, courseCode = "UM", sesskey, occurrence = "", referenceDate }) {
   if (!courseId) {
     throw new Error("Missing courseId for attendance fetch");
   }
 
-  // 1. Discover attendance activity instance (cmid)
-  let cmid = null;
-  let attendanceUrl = null;
+  // 1. Discover ALL attendance activity instances (cmid) across the course
+  // We check both /mod/attendance/index.php AND /course/view.php (captures activities at the bottom of the page)
+  const discoveredInstances = [];
+  const seenCmids = new Set();
 
+  function addInstance(inst) {
+    if (inst && inst.cmid && !seenCmids.has(inst.cmid)) {
+      seenCmids.add(inst.cmid);
+      discoveredInstances.push(inst);
+    }
+  }
+
+  // A. Check /mod/attendance/index.php
   try {
     const indexRes = await fetch(`${SPECTRUM_BASE_URL}/mod/attendance/index.php?id=${encodeURIComponent(courseId)}`, {
       method: "GET",
@@ -44,43 +57,35 @@ export async function fetchCourseAttendance({ courseId, courseCode = "UM", sessk
     if (indexRes.ok) {
       const indexHtml = await indexRes.text();
       const instances = parseAttendanceIndex(indexHtml);
-      if (instances.length > 0) {
-        cmid = instances[0].cmid;
-        attendanceUrl = instances[0].url;
-      }
+      instances.forEach(addInstance);
     }
   } catch (err) {
     if (err instanceof InvalidSessionError || err.name === "INVALID_SESSION") throw err;
     console.warn(`[Spectra] Could not discover attendance via index for course ${courseId}:`, err);
   }
 
-  // Fallback: If not found in index, scrape course page
-  if (!cmid) {
-    try {
-      const courseRes = await fetch(`${SPECTRUM_BASE_URL}/course/view.php?id=${encodeURIComponent(courseId)}`, {
-        method: "GET",
-        credentials: "include"
-      });
+  // B. Also scrape /course/view.php?id=... (captures attendance activities at bottom of page or in weekly sections)
+  try {
+    const courseRes = await fetch(`${SPECTRUM_BASE_URL}/course/view.php?id=${encodeURIComponent(courseId)}`, {
+      method: "GET",
+      credentials: "include"
+    });
 
-      if (courseRes.redirected && courseRes.url.includes("login")) {
-        throw new InvalidSessionError("SPeCTRUM session expired while loading course view.");
-      }
-
-      if (courseRes.ok) {
-        const courseHtml = await courseRes.text();
-        const instances = parseAttendanceIndex(courseHtml);
-        if (instances.length > 0) {
-          cmid = instances[0].cmid;
-          attendanceUrl = instances[0].url;
-        }
-      }
-    } catch (err) {
-      if (err instanceof InvalidSessionError || err.name === "INVALID_SESSION") throw err;
-      console.warn(`[Spectra] Fallback course view scrape failed for course ${courseId}:`, err);
+    if (courseRes.redirected && courseRes.url.includes("login")) {
+      throw new InvalidSessionError("SPeCTRUM session expired while loading course view.");
     }
+
+    if (courseRes.ok) {
+      const courseHtml = await courseRes.text();
+      const courseInstances = parseAttendanceIndex(courseHtml);
+      courseInstances.forEach(addInstance);
+    }
+  } catch (err) {
+    if (err instanceof InvalidSessionError || err.name === "INVALID_SESSION") throw err;
+    console.warn(`[Spectra] Fallback course view scrape failed for course ${courseId}:`, err);
   }
 
-  if (!cmid) {
+  if (discoveredInstances.length === 0) {
     // Course does not have an active mod_attendance module on SPeCTRUM
     return {
       courseId,
@@ -103,41 +108,146 @@ export async function fetchCourseAttendance({ courseId, courseCode = "UM", sessk
     };
   }
 
-  // 2. Fetch attendance view page
-  const viewUrl = attendanceUrl || `${SPECTRUM_BASE_URL}/mod/attendance/view.php?id=${cmid}`;
-  const viewRes = await fetch(viewUrl, {
-    method: "GET",
-    credentials: "include"
+  // 2. Filter attendance instances by occurrence if instance name explicitly specifies one
+  const isOccSpecified = Boolean(occurrence && occurrence.trim().toLowerCase() !== "all");
+  let relevantInstances = discoveredInstances;
+  if (isOccSpecified) {
+    const matching = discoveredInstances.filter((inst) => matchesOccurrence("", occurrence, "", inst.name));
+    if (matching.length > 0) {
+      relevantInstances = matching;
+    }
+  }
+
+  // 3. Read ALL attendance tabs across each relevant attendance instance
+  const allSessionsMap = new Map();
+  const fetchedUrls = new Set();
+  let firstViewUrl = relevantInstances[0].url || `${SPECTRUM_BASE_URL}/mod/attendance/view.php?id=${relevantInstances[0].cmid}`;
+  let primarySummary = null;
+
+  async function fetchTabHtml(url) {
+    if (fetchedUrls.has(url)) return null;
+    fetchedUrls.add(url);
+    try {
+      const res = await fetch(url, { method: "GET", credentials: "include" });
+      if (res.redirected && res.url.includes("login")) {
+        throw new InvalidSessionError("SPeCTRUM session expired while loading attendance view.");
+      }
+      if (!res.ok) return null;
+      return await res.text();
+    } catch (e) {
+      if (e instanceof InvalidSessionError || e.name === "INVALID_SESSION") throw e;
+      return null;
+    }
+  }
+
+  for (const instance of relevantInstances) {
+    const cmid = instance.cmid;
+    const baseViewUrl = instance.url || `${SPECTRUM_BASE_URL}/mod/attendance/view.php?id=${cmid}`;
+
+    // A. Fetch the default view page
+    const defaultHtml = await fetchTabHtml(baseViewUrl);
+    if (!defaultHtml) continue;
+
+    // Parse tabs available on the page
+    const tabs = parseAttendanceTabs(defaultHtml, cmid, SPECTRUM_BASE_URL);
+
+    // Identify which tab URLs to fetch:
+    // 1) Universal "All" tab (view=5) so sessions across the entire semester are captured
+    // 2) Any Group/Occurrence tab that matches the student's entered occurrence
+    // 3) "All past" tab (view=4)
+    const urlsToFetch = [];
+
+    const explicitAllTab = tabs.find((t) => /all|semua/i.test(t.label) || (t.url && t.url.includes("view=5")));
+    const fallbackAllUrl = `${SPECTRUM_BASE_URL}/mod/attendance/view.php?id=${cmid}&view=5`;
+    urlsToFetch.push(explicitAllTab ? explicitAllTab.url : fallbackAllUrl);
+
+    if (isOccSpecified) {
+      const matchingGroupTabs = tabs.filter((t) => t.isGroup && matchesOccurrence(t.label, occurrence));
+      matchingGroupTabs.forEach((gt) => urlsToFetch.push(gt.url));
+    }
+
+    // Process default page sessions
+    const parsedDefault = parseAttendanceView(defaultHtml, occurrence, referenceDate, instance.name);
+    if (!primarySummary) primarySummary = parsedDefault.summary;
+
+    for (const sess of parsedDefault.sessions) {
+      const key = `${sess.id || sess.sessid}_${sess.date}_${sess.time}_${sess.group}`;
+      if (!allSessionsMap.has(key) || (!allSessionsMap.get(key).submitUrl && sess.submitUrl)) {
+        allSessionsMap.set(key, { ...sess, activityName: instance.name });
+      }
+    }
+
+    // Process each additional discovered tab page
+    for (const tabUrl of urlsToFetch) {
+      const tabHtml = await fetchTabHtml(tabUrl);
+      if (tabHtml) {
+        const parsedTab = parseAttendanceView(tabHtml, occurrence, referenceDate, instance.name);
+        for (const sess of parsedTab.sessions) {
+          const key = `${sess.id || sess.sessid}_${sess.date}_${sess.time}_${sess.group}`;
+          if (!allSessionsMap.has(key) || (!allSessionsMap.get(key).submitUrl && sess.submitUrl)) {
+            allSessionsMap.set(key, { ...sess, activityName: instance.name });
+          }
+        }
+      }
+    }
+  }
+
+  // 4. Strictly filter merged sessions with user-entered occurrence
+  const allMergedSessions = Array.from(allSessionsMap.values());
+  const filteredSessions = isOccSpecified
+    ? allMergedSessions.filter((s) => s.matchesOccurrence || isRespectiveOccurrence(s.group, occurrence, s.description, s.activityName))
+    : allMergedSessions;
+
+  // 5. Recalculate summary metrics from the filtered sessions
+  let present = 0, absent = 0, late = 0, excused = 0, unrecorded = 0;
+  let openSession = null;
+
+  filteredSessions.forEach((s) => {
+    if (s.status === "present") present++;
+    else if (s.status === "absent") absent++;
+    else if (s.status === "late") late++;
+    else if (s.status === "excused") excused++;
+    else {
+      unrecorded++;
+    }
   });
 
-  if (viewRes.redirected && viewRes.url.includes("login")) {
-    throw new InvalidSessionError("SPeCTRUM session expired while loading attendance view.");
+  // Check for open session genuinely matching the student's occurrence
+  for (const s of filteredSessions) {
+    if (s.status === "open" && s.submitUrl && isRespectiveOccurrence(s.group, occurrence, s.description, s.activityName)) {
+      openSession = s;
+      break;
+    }
   }
 
-  if (!viewRes.ok) {
-    throw new Error(`SPeCTRUM attendance view returned HTTP ${viewRes.status}`);
-  }
+  const totalCompleted = present + absent + late + excused;
+  const takenSessions = totalCompleted > 0 ? totalCompleted : (primarySummary?.takenSessions || 0);
+  const score = (present * 1.0) + (late * 0.5) + (excused * 1.0);
+  const percentage = totalCompleted > 0 ? `${((score / totalCompleted) * 100).toFixed(1)}%` : (primarySummary?.percentage || "100.0%");
+  const points = totalCompleted > 0 ? `${score} / ${totalCompleted}` : (primarySummary?.points || "0 / 0");
 
-  const viewHtml = await viewRes.text();
-  const parsed = parseAttendanceView(viewHtml, occurrence, referenceDate);
-
-  // STRICT REQUIREMENT: Only include attendance sessions according to occurrence for each subject
-  const isOccSpecified = Boolean(occurrence && occurrence.trim().toLowerCase() !== "all");
-  const filteredSessions = isOccSpecified
-    ? parsed.sessions.filter((s) => s.matchesOccurrence || isRespectiveOccurrence(s.group, occurrence, s.description))
-    : parsed.sessions;
+  const summary = {
+    takenSessions,
+    points,
+    percentage,
+    presentCount: present,
+    absentCount: absent,
+    lateCount: late,
+    excusedCount: excused,
+    unrecordedCount: unrecorded
+  };
 
   return {
     courseId,
     courseCode,
-    cmid,
+    cmid: relevantInstances[0].cmid,
     hasModule: true,
-    viewUrl,
+    viewUrl: firstViewUrl,
     occurrence,
-    summary: parsed.summary,
+    summary,
     sessions: filteredSessions,
-    hasOpenSession: parsed.hasOpenSession,
-    openSession: parsed.openSession
+    hasOpenSession: Boolean(openSession),
+    openSession
   };
 }
 
@@ -242,6 +352,7 @@ export async function autoSubmitAttendance({
   password = "",
   sessionGroup,
   sessionDescription = "",
+  activityName = "",
   studentOccurrence,
   isOpen
 }) {
@@ -253,10 +364,10 @@ export async function autoSubmitAttendance({
     };
   }
 
-  if (sessionGroup !== undefined && studentOccurrence !== undefined && !isRespectiveOccurrence(sessionGroup, studentOccurrence, sessionDescription)) {
+  if (sessionGroup !== undefined && studentOccurrence !== undefined && !isRespectiveOccurrence(sessionGroup, studentOccurrence, sessionDescription, activityName)) {
     return {
       success: false,
-      error: `Session group (${sessionGroup || "Group"}) does not match your enrolled occurrence (${studentOccurrence || "Not configured"}).`
+      error: `Session group (${sessionGroup || activityName || "Group"}) does not match your enrolled occurrence (${studentOccurrence || "Not configured"}).`
     };
   }
 
