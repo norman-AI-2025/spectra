@@ -761,14 +761,20 @@ export function parseAttendanceTabs(html, cmid, baseUrl = "https://spectrum.um.e
 
 /**
  * Normalizes and parses SPeCTRUM attendance date strings
- * Supports English and Bahasa Melayu dates, as well as DD/MM/YYYY and YYYY-MM-DD.
+ * Supports English and Bahasa Melayu dates, dates without year, as well as DD/MM/YYYY, DD.MM.YYYY, and DD-MM-YYYY.
  */
 export function parseAttendanceSessionDate(dateText, timeText = "") {
   if (!dateText) return null;
 
+  const now = new Date();
+  const currentYear = now.getFullYear();
+
   let cleaned = String(dateText)
+    // Strip day names (English & Malay)
     .replace(/\b(isnin|selasa|rabu|khamis|jumaat|sabtu|ahad)\b/gi, "")
+    .replace(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi, "")
     .replace(/\b(mon|tue|wed|thu|fri|sat|sun)\b/gi, "")
+    // Normalize Malay months to English abbreviations
     .replace(/\bjan(?:uari)?\b/gi, "Jan")
     .replace(/\bfeb(?:ruari)?\b/gi, "Feb")
     .replace(/\bmac\b/gi, "Mar")
@@ -781,21 +787,45 @@ export function parseAttendanceSessionDate(dateText, timeText = "") {
     .replace(/\bokt(?:ober)?\b/gi, "Oct")
     .replace(/\bnov(?:ember)?\b/gi, "Nov")
     .replace(/\bdis(?:ember)?\b/gi, "Dec")
+    // Clean unwanted characters and symbols like commas, brackets, etc.
+    .replace(/[,\(\)]/g, " ")
     .trim();
 
-  // Try standard parse
-  let ts = Date.parse(cleaned);
-  if (!isNaN(ts)) return ts;
-
-  // DD/MM/YYYY or DD.MM.YYYY
-  const m = cleaned.match(/^(\d{1,2})[\.\/\-](\d{1,2})[\.\/\-](\d{4})/);
-  if (m) {
-    const day = parseInt(m[1], 10);
-    const month = parseInt(m[2], 10) - 1;
-    const year = parseInt(m[3], 10);
+  // 1. Try DD/MM/YYYY or DD.MM.YYYY or DD-MM-YYYY or DD/MM/YY
+  const slashMatch = cleaned.match(/^(\d{1,2})[\.\/\-](\d{1,2})(?:[\.\/\-](\d{2,4}))?/);
+  if (slashMatch) {
+    const day = parseInt(slashMatch[1], 10);
+    const month = parseInt(slashMatch[2], 10) - 1;
+    let year = slashMatch[3] ? parseInt(slashMatch[3], 10) : currentYear;
+    if (year < 100) year += 2000;
     const parsedTs = new Date(year, month, day).getTime();
     if (!isNaN(parsedTs)) return parsedTs;
   }
+
+  // 2. Try DD Month (e.g. "20 Oct" or "20 Oct 2026")
+  const monthNames = {
+    jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
+    jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11
+  };
+  const wordMatch = cleaned.match(/(\d{1,2})\s+([A-Za-z]+)(?:\s+(\d{2,4}))?/);
+  if (wordMatch) {
+    const day = parseInt(wordMatch[1], 10);
+    const monStr = wordMatch[2].slice(0, 3).toLowerCase();
+    if (monthNames[monStr] !== undefined) {
+      let year = wordMatch[3] ? parseInt(wordMatch[3], 10) : currentYear;
+      if (year < 100) year += 2000;
+      const parsedTs = new Date(year, monthNames[monStr], day).getTime();
+      if (!isNaN(parsedTs)) return parsedTs;
+    }
+  }
+
+  // 3. Fallback: If year is missing in string, append current year and try native parse
+  if (!/\b\d{4}\b/.test(cleaned)) {
+    cleaned = `${cleaned} ${currentYear}`;
+  }
+
+  let ts = Date.parse(cleaned);
+  if (!isNaN(ts)) return ts;
 
   return null;
 }
@@ -812,9 +842,12 @@ export function isAttendanceSessionPastOrCurrent(dateText, timeText = "", status
   }
 
   const ts = parseAttendanceSessionDate(dateText, timeText);
-  if (!ts) return true; // keep if cannot determine date
+  if (!ts) {
+    // If unrecorded session date cannot be parsed, strictly exclude from past/current
+    return false;
+  }
 
-  const ref = new Date(referenceDate);
+  const ref = new Date(referenceDate || new Date());
   const endOfRefDate = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate(), 23, 59, 59, 999).getTime();
 
   return ts <= endOfRefDate;

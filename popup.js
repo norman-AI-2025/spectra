@@ -1846,8 +1846,8 @@ function renderAttendanceRecords() {
     const hasConfiguredOcc = Boolean(configuredOcc && configuredOcc.trim().toLowerCase() !== "all");
     const cViewUrl = c.viewUrl || (c.cmid ? `https://spectrum.um.edu.my/mod/attendance/view.php?id=${c.cmid}` : `https://spectrum.um.edu.my/course/view.php?id=${c.courseId}`);
     (c.sessions || []).forEach((s) => {
-      // STRICT REQUIREMENT: Only show attendance according to occurrence for each subject
-      if (hasConfiguredOcc && !isRespectiveOccurrence(s.group, configuredOcc, s.description)) {
+      // STRICT REQUIREMENT: Only show attendance according to occurrence for each subject (past till current date only)
+      if (hasConfiguredOcc && !isRespectiveOccurrence(s.group, configuredOcc, s.description, s.activityName)) {
         return;
       }
       if (s.isPastOrCurrent !== false && isAttendanceSessionPastOrCurrent(s.date, s.time, s.status)) {

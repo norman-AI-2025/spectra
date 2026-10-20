@@ -12,6 +12,8 @@ import {
   parseAttendanceView,
   parseAttendanceTabs,
   parseAttendanceForm,
+  parseAttendanceSessionDate,
+  isAttendanceSessionPastOrCurrent,
   matchesOccurrence,
   isRespectiveOccurrence
 } from "./parser.js";
@@ -192,11 +194,17 @@ export async function fetchCourseAttendance({ courseId, courseCode = "UM", sessk
     }
   }
 
-  // 4. Strictly filter merged sessions with user-entered occurrence
+  // 4. Strictly filter merged sessions: past till current date ONLY, and for respective occurrence ONLY
   const allMergedSessions = Array.from(allSessionsMap.values());
-  const filteredSessions = isOccSpecified
-    ? allMergedSessions.filter((s) => s.matchesOccurrence || isRespectiveOccurrence(s.group, occurrence, s.description, s.activityName))
-    : allMergedSessions;
+  const filteredSessions = allMergedSessions.filter((s) => {
+    // 1. Respective Occurrence check
+    const matchesOcc = !isOccSpecified || s.matchesOccurrence || isRespectiveOccurrence(s.group, occurrence, s.description, s.activityName);
+    if (!matchesOcc) return false;
+
+    // 2. Past till Current Date ONLY check
+    const isPastOrCurrent = isAttendanceSessionPastOrCurrent(s.date, s.time, s.status, referenceDate);
+    return isPastOrCurrent;
+  });
 
   // 5. Recalculate summary metrics from the filtered sessions
   let present = 0, absent = 0, late = 0, excused = 0, unrecorded = 0;

@@ -552,6 +552,34 @@ assert(matchesOccurrence("All students", "Occ 1", "", "Tutorial Attendance (Occ 
 assert(matchesOccurrence("All students", "Occ 2", "", "Tutorial Attendance (Occ 2)") === true, "Activity with Occ 2 matches student Occ 2");
 assert(matchesOccurrence("All students", "Occ 1", "", "Lecture Attendance") === true, "Universal lecture activity matches student Occ 1");
 
+// 10.4: Past till current date ONLY for respective occurrence
+const sampleMultiWeekHtml = `
+  <table class="attlist">
+    <tr>
+      <td>Mon 7 Oct 2024</td><td>10:00AM</td><td>Occ 1</td><td>Past Session Occ 1</td><td>Present</td><td>2 / 2</td>
+    </tr>
+    <tr>
+      <td>Mon 7 Oct 2024</td><td>10:00AM</td><td>Occ 2</td><td>Past Session Occ 2</td><td>Present</td><td>2 / 2</td>
+    </tr>
+    <tr>
+      <td>Mon 21 Oct 2024</td><td>10:00AM</td><td>Occ 1</td><td>Current Date Session Occ 1</td><td><a href="https://spectrum.um.edu.my/mod/attendance/attendance.php?sessid=901">Submit attendance</a></td><td>?</td>
+    </tr>
+    <tr>
+      <td>Mon 25 Nov 2024</td><td>10:00AM</td><td>Occ 1</td><td>Future Week Session Occ 1</td><td>?</td><td>?</td>
+    </tr>
+    <tr>
+      <td>Mon 25 Nov 2024</td><td>10:00AM</td><td>Occ 2</td><td>Future Week Session Occ 2</td><td>?</td><td>?</td>
+    </tr>
+  </table>
+`;
+
+const parsedPastCurrentOnly = parseAttendanceView(sampleMultiWeekHtml, "Occ 1", new Date("2024-10-21T12:00:00"));
+const sessionDescs = parsedPastCurrentOnly.sessions.map((s) => s.description);
+assert(!sessionDescs.includes("Future Week Session Occ 1"), "Strict: Future unrecorded session is excluded");
+assert(!sessionDescs.includes("Future Week Session Occ 2"), "Strict: Future unrecorded session for Occ 2 is excluded");
+assert(sessionDescs.includes("Past Session Occ 1"), "Strict: Past session for respective occurrence is included");
+assert(sessionDescs.includes("Current Date Session Occ 1"), "Strict: Current date session for respective occurrence is included");
+
 globalThis.fetch = origFetch;
 
 console.log(`\n=== All Attendance Tests Finished: ${passed} passed, ${failed} failed ===`);
