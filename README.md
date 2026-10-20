@@ -5,6 +5,8 @@
 
 [![Manifest V3](https://img.shields.io/badge/Chrome_Extension-Manifest_V3-4285F4?logo=googlechrome&logoColor=white)](https://developer.chrome.com/docs/extensions/mv3/)
 [![Universiti Malaya](https://img.shields.io/badge/UM-SPeCTRUM-003366)](https://spectrum.um.edu.my/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Donate](https://img.shields.io/badge/Support-Buy%20Me%20A%20Coffee-orange.svg?logo=buy-me-a-coffee)](https://buymeacoffee.com/normanlee)
 [![Telegram Bot API](https://img.shields.io/badge/Telegram-Bot_API-26A5E4?logo=telegram&logoColor=white)](https://core.telegram.org/bots/api)
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers_KV-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
 
@@ -278,3 +280,39 @@ spectra/
 Encountering an issue or have a suggestion?
 - Open an [Issue](https://github.com/norman-AI-2025/spectra/issues) on GitHub.
 - Contributions and Pull Requests are welcome!
+
+---
+
+## ☕ Support & Donations
+
+Spectra is an independent open-source project created with ❤️ to empower Universiti Malaya students to stay on top of coursework, attendance, and deadlines.
+
+If Spectra saved you from an absent mark, helped you organize your semester lecture slides in one click, or alerted you to an urgent midnight submission, consider buying me a coffee or supporting future development!
+
+<div align="center">
+
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-Donate-yellow.svg?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/normanlee)
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-Support-F16061.svg?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/normanlee)
+[![GitHub Sponsors](https://img.shields.io/badge/GitHub%20Sponsors-Sponsor-EA4AAA.svg?style=for-the-badge&logo=github-sponsors&logoColor=white)](https://github.com/sponsors/norman-AI-2025)
+[![PayPal](https://img.shields.io/badge/PayPal-Donate-00457C.svg?style=for-the-badge&logo=paypal&logoColor=white)](https://paypal.me/normanlee)
+
+</div>
+
+> **🇲🇾 Note for Malaysian Students:** If you prefer transferring via **DuitNow QR** or **Touch 'n Go eWallet**, feel free to reach out via GitHub or connect directly! Every bit of support keeps the serverless relay running and helps fund ongoing updates.
+
+---
+
+## 📄 License
+
+This project is licensed under the **MIT License** - see the [`LICENSE`](LICENSE) file for details.
+
+```text
+MIT License
+Copyright (c) 2026 Norman Lee
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software...
+```
