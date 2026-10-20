@@ -171,11 +171,16 @@ async function runSpectrumPollingJob(env) {
     // 2. 24/7 Cloud Attendance Scanner & Auto-Submission
     const attendanceResult = await checkAndRecordCloudAttendance(env, sessionData);
 
+    // 3. 24/7 Cloud Submission Deadline Scanner & Urgent Alert Dispatch
+    const deadlineResult = await checkCloudDeadlines(env, sessionData);
+
     return {
       status: "ok",
       timestamp: Date.now(),
       attendanceChecked: attendanceResult.checked,
-      attendanceRecorded: attendanceResult.recorded
+      attendanceRecorded: attendanceResult.recorded,
+      deadlinesChecked: deadlineResult.checked,
+      deadlinesAlerted: deadlineResult.alerted
     };
   } catch (err) {
     console.error("[Spectra Relay] Polling job failed:", err);
@@ -437,3 +442,202 @@ async function dispatchTelegram(botToken, chatId, textHtml) {
     console.error("[Spectra Relay] Telegram dispatch error:", e);
   }
 }
+
+/**
+ * 24/7 Cloud Deadline Scanner & Telegram Urgent Alert Routine
+ */
+async function checkCloudDeadlines(env, sessionData) {
+  const { sessionToken, courses = [], occurrences = {} } = sessionData;
+  if (!courses || courses.length === 0) {
+    return { checked: 0, alerted: 0 };
+  }
+
+  const cookieHeader = `MoodleSession=${sessionToken}`;
+  const botToken = env.TELEGRAM_BOT_TOKEN;
+  const chatId = env.TELEGRAM_CHAT_ID;
+  if (!botToken || !chatId) {
+    return { checked: 0, alerted: 0 };
+  }
+
+  let alertedDeadlineIds = new Set();
+  if (env.SPECTRA_KV) {
+    const rawAlerted = await env.SPECTRA_KV.get("alerted_deadline_ids");
+    if (rawAlerted) {
+      try {
+        alertedDeadlineIds = new Set(JSON.parse(rawAlerted));
+      } catch (_) {}
+    }
+  }
+
+  let alertedCount = 0;
+  let checkedCourses = 0;
+  const now = Date.now();
+
+  for (const course of courses) {
+    const courseId = course.id;
+    const courseCode = course.code || course.id;
+    const studentOcc = occurrences[courseId] || occurrences[courseCode] || "";
+
+    try {
+      // Check /mod/assign/index.php?id=...
+      const res = await fetch(`https://spectrum.um.edu.my/mod/assign/index.php?id=${encodeURIComponent(courseId)}`, {
+        headers: { "Cookie": cookieHeader, "User-Agent": "Mozilla/5.0 Spectra-Relay/1.0" }
+      });
+      if (!res.ok) continue;
+      const html = await res.text();
+      checkedCourses++;
+
+      const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+      let rowMatch;
+      while ((rowMatch = rowRegex.exec(html)) !== null) {
+        const rowHtml = rowMatch[1];
+        const linkMatch = rowHtml.match(/<a[^>]+href=["']([^"']*mod\/assign\/view\.php\?id=(\d+)[^"']*)["'][^>]*>([\s\S]*?)<\/a>/i);
+        if (!linkMatch) continue;
+
+        const assignUrl = linkMatch[1];
+        const cmid = linkMatch[2];
+        const rawTitle = linkMatch[3].replace(/<[^>]+>/g, "").trim();
+
+        // Skip if already alerted
+        if (alertedDeadlineIds.has(cmid)) continue;
+
+        // Occurrence filter
+        if (!matchesOccurrence("", studentOcc, rawTitle)) continue;
+
+        // Extract cells
+        const cellRegex = /<td[^>]*>([\s\S]*?)<\/td>/gi;
+        const cells = [];
+        let cM;
+        while ((cM = cellRegex.exec(rowHtml)) !== null) {
+          cells.push(cM[1].replace(/<[^>]+>/g, "").trim());
+        }
+
+        let dueDateText = "";
+        let submissionStatusText = "";
+        for (const c of cells) {
+          if (c.includes(rawTitle)) continue;
+          if (!dueDateText && (/\d{1,2}[:.]\d{2}/.test(c) || /\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|okt|mac|mei|ogo|dis)\b/i.test(c) || /\d{1,2}[\/\.\-]\d{1,2}/.test(c))) {
+            dueDateText = c;
+          } else if (!submissionStatusText && c && !/^(week|minggu|topic|topik|\d+)$/i.test(c)) {
+            submissionStatusText = c;
+          }
+        }
+
+        const isSubmitted = /submitted|graded|selesai|dihantar/i.test(submissionStatusText) && !/no submission|not submitted|belum/i.test(submissionStatusText);
+        if (isSubmitted) continue;
+
+        const dueTimestamp = dueDateText ? parseWorkerDateString(dueDateText) : null;
+        if (!dueTimestamp) continue;
+
+        const diffHours = (dueTimestamp - now) / (1000 * 60 * 60);
+        if (diffHours > 0 && diffHours <= 24) {
+          // Urgent deadline (< 24h)
+          const hoursLeft = Math.max(1, Math.round(diffHours));
+          const fullUrl = assignUrl.startsWith("http") ? assignUrl : `https://spectrum.um.edu.my/${assignUrl.replace(/^\//, "")}`;
+
+          await dispatchTelegram(
+            botToken,
+            chatId,
+            `⏰ <b>Spectra Urgent Submission Deadline!</b>\n` +
+            `<b>Course:</b> ${courseCode}\n` +
+            `<b>Task:</b> ${rawTitle}\n` +
+            `<b>Due:</b> ${dueDateText} (${hoursLeft}h remaining)\n` +
+            `<b>Status:</b> No submission recorded\n` +
+            `🔗 <a href="${fullUrl}">Open Submission Dropbox on SPeCTRUM</a>`
+          );
+
+          alertedDeadlineIds.add(cmid);
+          alertedCount++;
+        }
+      }
+    } catch (err) {
+      console.warn(`[Spectra Relay] Error checking deadlines for ${courseCode}:`, err);
+    }
+  }
+
+  if (env.SPECTRA_KV && alertedCount > 0) {
+    await env.SPECTRA_KV.put("alerted_deadline_ids", JSON.stringify(Array.from(alertedDeadlineIds)));
+  }
+
+  return { checked: checkedCourses, alerted: alertedCount };
+}
+
+function parseWorkerDateString(dateStr) {
+  if (!dateStr) return null;
+  const raw = String(dateStr).trim();
+  const lower = raw.toLowerCase();
+  const now = new Date();
+
+  // Extract time
+  let hours = 23, minutes = 59;
+  const timeMatch = raw.match(/(\d{1,2})[:.](\d{2})\s*(am|pm)?/i);
+  if (timeMatch) {
+    let h = parseInt(timeMatch[1], 10);
+    const m = parseInt(timeMatch[2], 10);
+    const meridiem = (timeMatch[3] || "").toLowerCase();
+    if (meridiem === "pm" && h < 12) h += 12;
+    if (meridiem === "am" && h === 12) h = 0;
+    hours = h;
+    minutes = m;
+  }
+
+  // Today / Tomorrow
+  if (lower.includes("today") || lower.includes("hari ini")) {
+    const d = new Date(now);
+    d.setHours(hours, minutes, 0, 0);
+    return d.getTime();
+  }
+  if (lower.includes("tomorrow") || lower.includes("esok")) {
+    const d = new Date(now);
+    d.setDate(d.getDate() + 1);
+    d.setHours(hours, minutes, 0, 0);
+    return d.getTime();
+  }
+
+  // Normalize Malay months
+  let cleaned = raw
+    .replace(/\b(isnin|selasa|rabu|khamis|jumaat|sabtu|ahad)\b/gi, "")
+    .replace(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi, "")
+    .replace(/\bjan(?:uari)?\b/gi, "Jan")
+    .replace(/\bfeb(?:ruari)?\b/gi, "Feb")
+    .replace(/\bmac\b/gi, "Mar")
+    .replace(/\bapr(?:il)?\b/gi, "Apr")
+    .replace(/\bmei\b/gi, "May")
+    .replace(/\bjun\b/gi, "Jun")
+    .replace(/\bjul(?:ai)?\b/gi, "Jul")
+    .replace(/\bogo(?:s)?\b/gi, "Aug")
+    .replace(/\bsep(?:tember)?\b/gi, "Sep")
+    .replace(/\bokt(?:ober)?\b/gi, "Oct")
+    .replace(/\bnov(?:ember)?\b/gi, "Nov")
+    .replace(/\bdis(?:ember)?\b/gi, "Dec")
+    .replace(/[,\(\)]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  // DD/MM/YYYY
+  const slashMatch = cleaned.match(/^(\d{1,2})[\.\/\-](\d{1,2})(?:[\.\/\-](\d{2,4}))?/);
+  if (slashMatch) {
+    const day = parseInt(slashMatch[1], 10);
+    const month = parseInt(slashMatch[2], 10) - 1;
+    let year = slashMatch[3] ? parseInt(slashMatch[3], 10) : now.getFullYear();
+    if (year < 100) year += 2000;
+    return new Date(year, month, day, hours, minutes, 0, 0).getTime();
+  }
+
+  // DD Month YYYY
+  const monthMap = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+  const wordMatch = cleaned.match(/(\d{1,2})\s+([A-Za-z]+)(?:\s+(\d{2,4}))?/);
+  if (wordMatch) {
+    const day = parseInt(wordMatch[1], 10);
+    const monStr = wordMatch[2].slice(0, 3).toLowerCase();
+    if (monthMap[monStr] !== undefined) {
+      let year = wordMatch[3] ? parseInt(wordMatch[3], 10) : now.getFullYear();
+      if (year < 100) year += 2000;
+      return new Date(year, monthMap[monStr], day, hours, minutes, 0, 0).getTime();
+    }
+  }
+
+  const d = new Date(raw);
+  return !isNaN(d.getTime()) ? d.getTime() : null;
+}
+

@@ -1151,7 +1151,7 @@ async function loadLiveDeadlines() {
   if (emptyEl) emptyEl.classList.add("hidden");
 
   try {
-    const liveEvents = await fetchLiveDeadlines(state.sesskey);
+    const liveEvents = await fetchLiveDeadlines(state.sesskey, state.courses, state.courseOccurrences, state.studentOccurrence);
     state.deadlines = liveEvents;
 
     state.deadlines.sort((a, b) => {

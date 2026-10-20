@@ -384,7 +384,10 @@ async function checkUpcomingDeadlines() {
     "ntfy_topic",
     "completed_assignment_ids",
     "seen_deadline_alert_ids",
-    "telegram_sent_deadline_ids"
+    "telegram_sent_deadline_ids",
+    "courses",
+    "courseOccurrences",
+    "studentOccurrence"
   ]);
 
   if (!store.notify_urgent_deadlines) return;
@@ -406,7 +409,12 @@ async function checkUpcomingDeadlines() {
 
   let deadlines = [];
   try {
-    deadlines = await fetchLiveDeadlines(sessionContext.sesskey);
+    deadlines = await fetchLiveDeadlines(
+      sessionContext.sesskey,
+      store.courses,
+      store.courseOccurrences,
+      store.studentOccurrence
+    );
   } catch (err) {
     console.warn("[Spectra] Error querying live deadlines in background:", err);
     return;

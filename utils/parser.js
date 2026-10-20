@@ -51,6 +51,9 @@ export function calculateUrgency(timestamp) {
  * Format relative remaining time (e.g. "5h 12m left" or "2d left")
  */
 export function formatTimeRemaining(timestamp) {
+  if (!timestamp || isNaN(timestamp)) {
+    return "View Dropbox";
+  }
   const diffMs = timestamp - Date.now();
   if (diffMs <= 0) {
     const overdueHrs = Math.floor(Math.abs(diffMs) / (1000 * 60 * 60));
@@ -179,45 +182,94 @@ export function parseCalendarEvents(sourceData) {
 export function parseMoodleDateString(dateStr) {
   if (!dateStr) return null;
   const now = new Date();
-  const lower = dateStr.toLowerCase();
+  const raw = String(dateStr).replace(/\u00a0/g, " ").trim();
+  const lower = raw.toLowerCase();
 
-  // Check for "Today, HH:MM"
-  if (lower.includes("today")) {
-    const timeMatch = dateStr.match(/(\d{1,2}):(\d{2})(?:\s*([AP]M))?/i);
-    if (timeMatch) {
-      let hours = parseInt(timeMatch[1], 10);
-      const minutes = parseInt(timeMatch[2], 10);
-      const ampm = timeMatch[3];
-      if (ampm) {
-        if (ampm.toUpperCase() === "PM" && hours < 12) hours += 12;
-        if (ampm.toUpperCase() === "AM" && hours === 12) hours = 0;
-      }
-      const d = new Date(now);
-      d.setHours(hours, minutes, 0, 0);
-      return d.getTime();
+  // If text indicates no due date
+  if (lower.includes("no due date") || lower.includes("tiada tarikh akhir") || raw === "-") {
+    return null;
+  }
+
+  // Extract time if present
+  let hours = 23;
+  let minutes = 59;
+  const timeMatch = raw.match(/(\d{1,2})[:.](\d{2})(?:\s*([ap]m))?/i);
+  if (timeMatch) {
+    let h = parseInt(timeMatch[1], 10);
+    const m = parseInt(timeMatch[2], 10);
+    const ampm = timeMatch[3] ? timeMatch[3].toLowerCase() : null;
+    if (ampm === "pm" && h < 12) h += 12;
+    if (ampm === "am" && h === 12) h = 0;
+    hours = h;
+    minutes = m;
+  }
+
+  // Check for "today" / "hari ini"
+  if (lower.includes("today") || lower.includes("hari ini")) {
+    const d = new Date(now);
+    d.setHours(hours, minutes, 0, 0);
+    return d.getTime();
+  }
+
+  // Check for "tomorrow" / "esok"
+  if (lower.includes("tomorrow") || lower.includes("esok")) {
+    const d = new Date(now);
+    d.setDate(d.getDate() + 1);
+    d.setHours(hours, minutes, 0, 0);
+    return d.getTime();
+  }
+
+  // Normalize Malay day names and month names
+  let cleaned = raw
+    .replace(/\b(isnin|selasa|rabu|khamis|jumaat|sabtu|ahad)\b/gi, "")
+    .replace(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi, "")
+    .replace(/\b(mon|tue|wed|thu|fri|sat|sun)\b/gi, "")
+    .replace(/\bjan(?:uari)?\b/gi, "Jan")
+    .replace(/\bfeb(?:ruari)?\b/gi, "Feb")
+    .replace(/\bmac\b/gi, "Mar")
+    .replace(/\bapr(?:il)?\b/gi, "Apr")
+    .replace(/\bmei\b/gi, "May")
+    .replace(/\bjun\b/gi, "Jun")
+    .replace(/\bjul(?:ai)?\b/gi, "Jul")
+    .replace(/\bogo(?:s)?\b/gi, "Aug")
+    .replace(/\bsep(?:tember)?\b/gi, "Sep")
+    .replace(/\bokt(?:ober)?\b/gi, "Oct")
+    .replace(/\bnov(?:ember)?\b/gi, "Nov")
+    .replace(/\bdis(?:ember)?\b/gi, "Dec")
+    .replace(/[,\(\)]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  // 1. Try DD/MM/YYYY or DD.MM.YYYY or DD-MM-YYYY
+  const slashMatch = cleaned.match(/^(\d{1,2})[\.\/\-](\d{1,2})(?:[\.\/\-](\d{2,4}))?/);
+  if (slashMatch) {
+    const day = parseInt(slashMatch[1], 10);
+    const month = parseInt(slashMatch[2], 10) - 1;
+    let year = slashMatch[3] ? parseInt(slashMatch[3], 10) : now.getFullYear();
+    if (year < 100) year += 2000;
+    const d = new Date(year, month, day, hours, minutes, 0, 0);
+    if (!isNaN(d.getTime())) return d.getTime();
+  }
+
+  // 2. Try DD Month YYYY (e.g. "25 Oct 2024" or "25 October 2024")
+  const monthNames = {
+    jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
+    jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11
+  };
+  const wordMatch = cleaned.match(/(\d{1,2})\s+([A-Za-z]+)(?:\s+(\d{2,4}))?/);
+  if (wordMatch) {
+    const day = parseInt(wordMatch[1], 10);
+    const monStr = wordMatch[2].slice(0, 3).toLowerCase();
+    if (monthNames[monStr] !== undefined) {
+      let year = wordMatch[3] ? parseInt(wordMatch[3], 10) : now.getFullYear();
+      if (year < 100) year += 2000;
+      const d = new Date(year, monthNames[monStr], day, hours, minutes, 0, 0);
+      if (!isNaN(d.getTime())) return d.getTime();
     }
   }
 
-  // Check for "Tomorrow, HH:MM"
-  if (lower.includes("tomorrow")) {
-    const timeMatch = dateStr.match(/(\d{1,2}):(\d{2})(?:\s*([AP]M))?/i);
-    if (timeMatch) {
-      let hours = parseInt(timeMatch[1], 10);
-      const minutes = parseInt(timeMatch[2], 10);
-      const ampm = timeMatch[3];
-      if (ampm) {
-        if (ampm.toUpperCase() === "PM" && hours < 12) hours += 12;
-        if (ampm.toUpperCase() === "AM" && hours === 12) hours = 0;
-      }
-      const d = new Date(now);
-      d.setDate(d.getDate() + 1);
-      d.setHours(hours, minutes, 0, 0);
-      return d.getTime();
-    }
-  }
-
-  // Standard date parsing attempt
-  const cleanStr = dateStr.replace(/^[A-Za-z]+,\s*/, ""); // remove day of week like "Monday, "
+  // 3. Fallback to standard Date parse
+  const cleanStr = raw.replace(/^[A-Za-z]+,\s*/, "");
   const directDate = new Date(cleanStr);
   if (!isNaN(directDate.getTime())) {
     if (directDate.getFullYear() < 2000) {
@@ -227,6 +279,288 @@ export function parseMoodleDateString(dateStr) {
   }
 
   return null;
+}
+
+/**
+ * Parses SPeCTRUM /mod/assign/index.php?id={courseId}
+ * Extracts all assignment submission dropboxes and filters by student occurrence.
+ */
+export function parseCourseAssignmentsIndex(html, courseCode = "", courseName = "", studentOccurrence = "") {
+  if (!html) return [];
+  const assignments = [];
+
+  // 1. DOMParser Method (Browser / Extensions)
+  if (typeof DOMParser !== "undefined") {
+    try {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(html, "text/html");
+
+      const rows = doc.querySelectorAll("table.generaltable tr, table.mod_index tr");
+      rows.forEach((tr, idx) => {
+        const linkEl = tr.querySelector("a[href*='mod/assign/view.php']");
+        if (!linkEl) return;
+
+        const cells = tr.querySelectorAll("td");
+        if (cells.length < 2) return;
+
+        const rawUrl = linkEl.getAttribute("href") || "";
+        const url = rawUrl.startsWith("http") ? rawUrl : `https://spectrum.um.edu.my/${rawUrl.replace(/^\//, "")}`;
+        const idMatch = url.match(/id=(\d+)/);
+        const cmid = idMatch ? idMatch[1] : `assign_${idx}`;
+
+        const rawTitle = linkEl.textContent.trim();
+        const title = cleanMoodleTitle(rawTitle);
+
+        // Filter by occurrence: if student specified an occurrence, title must match or be universal
+        const matchesOcc = isRespectiveOccurrence("", studentOccurrence, title);
+        if (!matchesOcc) return;
+
+        // Find due date cell and submission status cell
+        let dueDateText = "";
+        let submissionStatusText = "";
+
+        cells.forEach((td) => {
+          if (td.contains(linkEl)) return; // Name cell
+          const text = td.textContent.trim();
+          if (/\b(?:submitted|grading|graded|submission|dihantar|tiada|hantar|penghantaran)\b/i.test(text)) {
+            submissionStatusText = text;
+          } else if (!dueDateText && (/\d{1,2}[:.]\d{2}/.test(text) || /\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|okt|mac|mei|ogo|dis)\b/i.test(text) || /\d{1,2}[\/\.\-]\d{1,2}/.test(text))) {
+            dueDateText = text;
+          } else if (!submissionStatusText && text && !/^(?:week|minggu|topic|topik)\s*\d*$/i.test(text) && !/^\d+$/.test(text)) {
+            submissionStatusText = text;
+          }
+        });
+
+        const dueTimestamp = dueDateText ? parseMoodleDateString(dueDateText) : null;
+        const isSubmitted = /submitted|graded|selesai|dihantar/i.test(submissionStatusText) && !/no submission|not submitted|belum/i.test(submissionStatusText);
+
+        assignments.push({
+          id: cmid,
+          cmid,
+          title,
+          courseCode: courseCode || "Course",
+          courseName: courseName || courseCode,
+          dueDate: dueTimestamp ? new Date(dueTimestamp).toISOString() : "",
+          dueTimestamp,
+          formattedTime: dueDateText || (dueTimestamp ? new Date(dueTimestamp).toLocaleString("en-MY", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "No due date"),
+          url,
+          type: "assign",
+          submissionStatus: submissionStatusText || (isSubmitted ? "Submitted" : "No submission"),
+          isSubmittedOnSpectrum: isSubmitted,
+          isCompleted: isSubmitted,
+          urgency: dueTimestamp ? calculateUrgency(dueTimestamp) : "upcoming",
+          matchesOccurrence: true
+        });
+      });
+
+      if (assignments.length > 0) return assignments;
+    } catch (e) {
+      console.warn("[Spectra Parser] DOM parseCourseAssignmentsIndex error:", e);
+    }
+  }
+
+  // 2. Regex Method Fallback (Node / Serverless / JSC)
+  const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+  let rowMatch;
+  let idx = 0;
+  while ((rowMatch = rowRegex.exec(html)) !== null) {
+    const rowHtml = rowMatch[1];
+    const linkMatch = rowHtml.match(/<a[^>]+href=["']([^"']*mod\/assign\/view\.php\?id=(\d+)[^"']*)["'][^>]*>([\s\S]*?)<\/a>/i);
+    if (!linkMatch) continue;
+
+    const rawUrl = linkMatch[1];
+    const cmid = linkMatch[2];
+    const rawTitle = linkMatch[3].replace(/<[^>]+>/g, "").trim();
+    const title = cleanMoodleTitle(rawTitle);
+
+    const matchesOcc = isRespectiveOccurrence("", studentOccurrence, title);
+    if (!matchesOcc) continue;
+
+    const cellRegex = /<td[^>]*>([\s\S]*?)<\/td>/gi;
+    const cells = [];
+    let cellM;
+    while ((cellM = cellRegex.exec(rowHtml)) !== null) {
+      cells.push(cellM[1].replace(/<[^>]+>/g, "").trim());
+    }
+
+    let dueDateText = "";
+    let submissionStatusText = "";
+    for (const c of cells) {
+      if (c.includes(rawTitle)) continue;
+      if (/\b(?:submitted|grading|graded|submission|dihantar|tiada|hantar|penghantaran)\b/i.test(c)) {
+        submissionStatusText = c;
+      } else if (!dueDateText && (/\d{1,2}[:.]\d{2}/.test(c) || /\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|okt|mac|mei|ogo|dis)\b/i.test(c) || /\d{1,2}[\/\.\-]\d{1,2}/.test(c))) {
+        dueDateText = c;
+      } else if (!submissionStatusText && c && !/^(?:week|minggu|topic|topik)\s*\d*$/i.test(c) && !/^\d+$/.test(c)) {
+        submissionStatusText = c;
+      }
+    }
+
+    const dueTimestamp = dueDateText ? parseMoodleDateString(dueDateText) : null;
+    const isSubmitted = /submitted|graded|selesai|dihantar/i.test(submissionStatusText) && !/no submission|not submitted|belum/i.test(submissionStatusText);
+    const url = rawUrl.startsWith("http") ? rawUrl : `https://spectrum.um.edu.my/${rawUrl.replace(/^\//, "")}`;
+
+    assignments.push({
+      id: cmid,
+      cmid,
+      title,
+      courseCode: courseCode || "Course",
+      courseName: courseName || courseCode,
+      dueDate: dueTimestamp ? new Date(dueTimestamp).toISOString() : "",
+      dueTimestamp,
+      formattedTime: dueDateText || (dueTimestamp ? new Date(dueTimestamp).toLocaleString("en-MY", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "No due date"),
+      url,
+      type: "assign",
+      submissionStatus: submissionStatusText || (isSubmitted ? "Submitted" : "No submission"),
+      isSubmittedOnSpectrum: isSubmitted,
+      isCompleted: isSubmitted,
+      urgency: dueTimestamp ? calculateUrgency(dueTimestamp) : "upcoming",
+      matchesOccurrence: true
+    });
+  }
+
+  return assignments;
+}
+
+/**
+ * Scrapes /course/view.php?id={courseId} from top to bottom
+ * Discovers all submission activities (assignments, quizzes, workshops, turnitin)
+ * across every section and filters by student occurrence.
+ */
+export function parseCourseViewSubmissions(html, courseCode = "", courseName = "", studentOccurrence = "") {
+  if (!html) return [];
+  const submissions = [];
+  const seenIds = new Set();
+
+  // 1. DOMParser Method
+  if (typeof DOMParser !== "undefined") {
+    try {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(html, "text/html");
+
+      const activityLinks = doc.querySelectorAll(
+        "a[href*='mod/assign/view.php'], a[href*='mod/quiz/view.php'], a[href*='mod/workshop/view.php'], a[href*='mod/turnitintooltwo/view.php']"
+      );
+
+      activityLinks.forEach((linkEl, idx) => {
+        const rawUrl = linkEl.getAttribute("href") || "";
+        const idMatch = rawUrl.match(/id=(\d+)/);
+        if (!idMatch) return;
+        const cmid = idMatch[1];
+        if (seenIds.has(cmid)) return;
+        seenIds.add(cmid);
+
+        const url = rawUrl.startsWith("http") ? rawUrl : `https://spectrum.um.edu.my/${rawUrl.replace(/^\//, "")}`;
+        const rawTitle = linkEl.querySelector(".instancename") ? linkEl.querySelector(".instancename").textContent : linkEl.textContent;
+        const title = cleanMoodleTitle(rawTitle);
+
+        // Strict occurrence filter
+        const matchesOcc = isRespectiveOccurrence("", studentOccurrence, title);
+        if (!matchesOcc) return;
+
+        // Find parent container to inspect due dates and completion tags
+        const parentAct = linkEl.closest("li.activity, .activityinstance, .activity-item, div.activity");
+        let dueDateText = "";
+        let isSubmitted = false;
+
+        if (parentAct) {
+          const actText = parentAct.textContent;
+
+          // Due date patterns
+          const dueM = actText.match(/(?:due|closes|tarikh akhir|tutup)[\s:]+([^\n\r<]+)/i);
+          if (dueM) {
+            dueDateText = dueM[1].trim();
+          }
+
+          // Submission / completion indicator
+          if (/submitted|dihantar|done|selesai/i.test(actText) && !/not submitted|belum/i.test(actText)) {
+            isSubmitted = true;
+          }
+        }
+
+        const dueTimestamp = dueDateText ? parseMoodleDateString(dueDateText) : null;
+        let type = "assign";
+        if (url.includes("mod/quiz")) type = "quiz";
+        else if (url.includes("mod/workshop")) type = "workshop";
+        else if (url.includes("turnitintooltwo")) type = "turnitin";
+
+        submissions.push({
+          id: cmid,
+          cmid,
+          title,
+          courseCode: courseCode || "Course",
+          courseName: courseName || courseCode,
+          dueDate: dueTimestamp ? new Date(dueTimestamp).toISOString() : "",
+          dueTimestamp,
+          formattedTime: dueDateText || (dueTimestamp ? new Date(dueTimestamp).toLocaleString("en-MY", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "View Dropbox"),
+          url,
+          type,
+          submissionStatus: isSubmitted ? "Submitted" : "No submission",
+          isSubmittedOnSpectrum: isSubmitted,
+          isCompleted: isSubmitted,
+          urgency: dueTimestamp ? calculateUrgency(dueTimestamp) : "upcoming",
+          matchesOccurrence: true
+        });
+      });
+
+      if (submissions.length > 0) return submissions;
+    } catch (e) {
+      console.warn("[Spectra Parser] DOM parseCourseViewSubmissions error:", e);
+    }
+  }
+
+  // 2. Regex Method Fallback
+  const linkRegex = /<a[^>]+href=["']([^"']*mod\/(?:assign|quiz|workshop|turnitintooltwo)\/view\.php\?id=(\d+)[^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  let match;
+  while ((match = linkRegex.exec(html)) !== null) {
+    const rawUrl = match[1];
+    const cmid = match[2];
+    if (seenIds.has(cmid)) continue;
+    seenIds.add(cmid);
+
+    const rawTitle = match[3].replace(/<[^>]+>/g, "").trim();
+    const title = cleanMoodleTitle(rawTitle);
+
+    const matchesOcc = isRespectiveOccurrence("", studentOccurrence, title);
+    if (!matchesOcc) continue;
+
+    const url = rawUrl.startsWith("http") ? rawUrl : `https://spectrum.um.edu.my/${rawUrl.replace(/^\//, "")}`;
+
+    let type = "assign";
+    if (url.includes("mod/quiz")) type = "quiz";
+    else if (url.includes("mod/workshop")) type = "workshop";
+    else if (url.includes("turnitintooltwo")) type = "turnitin";
+
+    // Extract nearby text snippet to capture due date and submission status
+    const contextSnippet = html.slice(match.index, match.index + 1200);
+    const dueM = contextSnippet.match(/(?:due|closes|tarikh akhir|tutup)[\s:]+([^\n\r<]+)/i);
+    let dueDateText = "";
+    if (dueM) {
+      dueDateText = dueM[1].trim();
+    }
+    const isSubmitted = /submitted|dihantar|done|selesai/i.test(contextSnippet) && !/not submitted|belum|to do/i.test(contextSnippet);
+    const dueTimestamp = dueDateText ? parseMoodleDateString(dueDateText) : null;
+
+    submissions.push({
+      id: cmid,
+      cmid,
+      title,
+      courseCode: courseCode || "Course",
+      courseName: courseName || courseCode,
+      dueDate: dueTimestamp ? new Date(dueTimestamp).toISOString() : "",
+      dueTimestamp,
+      formattedTime: dueDateText || (dueTimestamp ? new Date(dueTimestamp).toLocaleString("en-MY", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "View Dropbox"),
+      url,
+      type,
+      submissionStatus: isSubmitted ? "Submitted" : (dueDateText ? "No submission" : "View on SPeCTRUM"),
+      isSubmittedOnSpectrum: isSubmitted,
+      isCompleted: isSubmitted,
+      urgency: dueTimestamp ? calculateUrgency(dueTimestamp) : "upcoming",
+      matchesOccurrence: true
+    });
+  }
+
+  return submissions;
 }
 
 /**
@@ -567,9 +901,11 @@ export function isRespectiveOccurrence(sessionGroup, studentOccurrence, sessionD
   const actHasOcc = actName && (/\bocc(?:urrence)?\s*\d+\b/i.test(actName) || /\bkumpulan\s*\d+\b/i.test(actName) || /\bgroup\s*\d+\b/i.test(actName));
   if (actHasOcc) {
     if (!occ) return false;
-    const occDigits = occ.match(/\b\d+\b/) || occ.match(/\d+/);
-    const actDigits = actName.match(/\b\d+\b/) || actName.match(/\d+/);
-    if (occDigits && actDigits && occDigits[0] !== actDigits[0]) {
+    const occM = occ.match(/\b(?:occ|occurrence|kumpulan|group)\s*#?\s*(\d+)\b/i) || occ.match(/\b\d+\b/);
+    const actM = actName.match(/\b(?:occ|occurrence|kumpulan|group)\s*#?\s*(\d+)\b/i);
+    const occNum = occM ? (occM[1] || occM[0]) : null;
+    const actNum = actM ? actM[1] : null;
+    if (occNum && actNum && parseInt(occNum, 10) !== parseInt(actNum, 10)) {
       // Activity specifically belongs to another occurrence!
       return false;
     }
@@ -599,12 +935,22 @@ export function isRespectiveOccurrence(sessionGroup, studentOccurrence, sessionD
     return false;
   }
 
-  // Extract primary occurrence/group number if present (e.g. Occ 1 vs Occ 11, Occ 2 vs Occ 1)
-  const occDigits = occ.match(/\b\d+\b/) || occ.match(/\d+/);
-  const textDigits = targetText.match(/\b\d+\b/) || targetText.match(/\d+/);
+  // Extract occurrence number specifically associated with occ/kumpulan/group keywords if present
+  const occNumberMatch = targetText.match(/\b(?:occ|occurrence|kumpulan|group)\s*#?\s*(\d+)\b/i);
+  let textNum = null;
+  if (occNumberMatch) {
+    textNum = occNumberMatch[1];
+  } else {
+    // If targetText is purely a group name like "Group 1" or "1", fallback to first digits
+    const m = targetText.match(/\b\d+\b/) || targetText.match(/\d+/);
+    if (m) textNum = m[0];
+  }
 
-  if (occDigits && textDigits) {
-    return occDigits[0] === textDigits[0];
+  const occDigits = occ.match(/\b(?:occ|occurrence|kumpulan|group)\s*#?\s*(\d+)\b/i) || occ.match(/\b\d+\b/) || occ.match(/\d+/);
+  const studentNum = occDigits ? (occDigits[1] || occDigits[0]) : null;
+
+  if (studentNum && textNum) {
+    return parseInt(studentNum, 10) === parseInt(textNum, 10);
   }
 
   // If no numbers, require word boundary match
