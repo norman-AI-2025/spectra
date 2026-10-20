@@ -324,7 +324,7 @@ async function runTestSuite() {
   const body6 = await res6.json();
   assert(body6.hasSession === true, "Reports hasSession: true after sync");
   assert(body6.updatedAt !== null, "Includes ISO updatedAt timestamp");
-  assert(body6.cronSchedule === "Every 15 minutes", "Reports active 15m cron schedule");
+  assert(body6.cronSchedule === "Every 1 minute", "Reports active 1m cron schedule");
 
   // Test 7: Error Validation - Missing sessionToken in POST /sync
   print("\nTest 7: Error Validation (Missing sessionToken in POST /sync)");

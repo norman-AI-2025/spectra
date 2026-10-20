@@ -705,7 +705,49 @@ assert(autoFillResult.actions.length === 1, "Auto attendance detected 1 open ses
 assert(autoFillResult.actions[0].result.success === true, "Successfully auto-filled attendance for today's 2pm session");
 assert(autoFillResult.actions[0].result.status === "Present", "Recorded status is Present");
 
-globalThis.fetch = origFetch;
+// -------------------------------------------------------------
+// 13. Robust Attendance Form Parsing Tests (Attribute Orders & Labels)
+// -------------------------------------------------------------
+const reversedAttrFormHtml = `
+  <form id="mform1" action="https://spectrum.um.edu.my/mod/attendance/attendance.php">
+    <input value="test_sesskey_abc" name="sesskey" type="hidden">
+    <input value="8821" name="sessid" type="hidden">
+    <div class="status-option">
+      <input value="301" name="status" type="radio" id="id_status_301">
+      <label for="id_status_301">P (Present)</label>
+    </div>
+    <div class="status-option">
+      <input value="302" name="status" type="radio" id="id_status_302">
+      <label for="id_status_302">L (Late)</label>
+    </div>
+  </form>
+`;
+const parsedReversed = parseAttendanceForm(reversedAttrFormHtml);
+assert(parsedReversed.sessid === "8821", "Extracts sessid when value precedes name");
+assert(parsedReversed.sesskey === "test_sesskey_abc", "Extracts sesskey when value precedes name");
+assert(parsedReversed.statusId === "301", "Extracts Present statusId when name precedes type and label uses for attribute");
+
+const acronymFormHtml = `
+  <form action="attendance.php">
+    <input name="sesskey" value="key_123" type="hidden">
+    <input name="sessid" value="9901" type="hidden">
+    <label><input name="status" type="radio" value="501"> P</label>
+    <label><input name="status" type="radio" value="502"> L</label>
+  </form>
+`;
+const parsedAcronym = parseAttendanceForm(acronymFormHtml);
+assert(parsedAcronym.statusId === "501", "Recognizes P acronym as Present");
+
+const malayFormHtml = `
+  <form action="attendance.php">
+    <input name="sesskey" value="key_123" type="hidden">
+    <input name="sessid" value="9902" type="hidden">
+    <label><input name="status" type="radio" value="601"> Hadir</label>
+    <label><input name="status" type="radio" value="602"> Lewat</label>
+  </form>
+`;
+const parsedMalay = parseAttendanceForm(malayFormHtml);
+assert(parsedMalay.statusId === "601", "Recognizes Hadir as Present");
 
 console.log(`\n=== All Attendance Tests Finished: ${passed} passed, ${failed} failed ===`);
 if (failed > 0) {

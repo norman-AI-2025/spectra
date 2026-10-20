@@ -445,8 +445,8 @@ function switchTab(tabName) {
     renderAttendanceSummaryMetrics();
     renderOpenAttendanceBanner();
     renderAttendanceRecords();
-    if (!state.attendance && state.isAuthenticated) {
-      loadLiveAttendanceData();
+    if (state.isAuthenticated) {
+      loadLiveAttendanceData(true);
     }
   }
 }
@@ -986,6 +986,9 @@ async function syncLiveSession() {
       }
       if (stored.verifiedSesskey) {
         state.sesskey = stored.verifiedSesskey;
+        state.isAuthenticated = true;
+        updateAuthStatusBadge("connected");
+        updateSessionIndicator("connected", "Connected");
         const sesskeyEl = document.getElementById("sesskeyDisplay");
         if (sesskeyEl) sesskeyEl.textContent = `${stored.verifiedSesskey.substring(0, 5)}••••••`;
       }
@@ -1018,13 +1021,8 @@ async function syncLiveSession() {
   }
 
   try {
-    let sessionContext;
-    if (manualToken) {
-      // Use the injected scraper backend with the manual token!
-      sessionContext = await injectAndScrapeSpectrum(manualToken);
-    } else {
-      sessionContext = await getSessionContext();
-    }
+    // Fast direct session verification (never opens background tabs)
+    const sessionContext = await getSessionContext();
 
     state.isAuthenticated = true;
     state.isDemoMode = false;
@@ -1046,21 +1044,21 @@ async function syncLiveSession() {
     const sesskeyEl = document.getElementById("sesskeyDisplay");
     if (sesskeyEl) sesskeyEl.textContent = `${sessionContext.sesskey.substring(0, 5)}••••••`;
 
-    // Connect scraped data directly to frontend UI
-    if ((sessionContext.rawCalendarEvents && sessionContext.rawCalendarEvents.length > 0) || (sessionContext.events && sessionContext.events.length > 0)) {
-      hydrateDeadlinesFromScrape(sessionContext.events, sessionContext.rawCalendarEvents);
-    } else {
-      await loadLiveDeadlines();
-    }
+    // Connect scraped data or fetch live in parallel for maximum speed!
+    const hasScrapedDeadlines = (sessionContext.rawCalendarEvents && sessionContext.rawCalendarEvents.length > 0) || (sessionContext.events && sessionContext.events.length > 0);
+    const hasScrapedCourses = (sessionContext.rawCourses && sessionContext.rawCourses.length > 0) || (sessionContext.courses && sessionContext.courses.length > 0);
 
-    if ((sessionContext.rawCourses && sessionContext.rawCourses.length > 0) || (sessionContext.courses && sessionContext.courses.length > 0)) {
-      await hydrateCoursesFromScrape(sessionContext.courses, sessionContext.rawCourses);
-    } else {
-      await loadLiveEnrolledCourses();
-    }
+    const deadlinePromise = hasScrapedDeadlines
+      ? Promise.resolve(hydrateDeadlinesFromScrape(sessionContext.events, sessionContext.rawCalendarEvents))
+      : loadLiveDeadlines();
 
-    // Load announcements
-    await loadLiveAnnouncements();
+    const coursePromise = hasScrapedCourses
+      ? hydrateCoursesFromScrape(sessionContext.courses, sessionContext.rawCourses)
+      : loadLiveEnrolledCourses();
+
+    const announcementPromise = loadLiveAnnouncements();
+
+    await Promise.allSettled([deadlinePromise, coursePromise, announcementPromise]);
 
   } catch (err) {
     console.warn("[Spectra] Live session authentication check:", err);
@@ -1550,15 +1548,16 @@ async function loadLiveAttendanceData(force = false) {
   try {
     let attendanceData = null;
 
-    // 1. Check cached_attendance if not forcing refresh
+    // 1. Check cached_attendance if not forcing refresh and cache is fresh (< 60s)
     if (!force && typeof chrome !== "undefined" && chrome.storage?.local) {
-      const stored = await chrome.storage.local.get(["cached_attendance"]);
-      if (stored.cached_attendance && stored.cached_attendance.courses?.length > 0) {
+      const stored = await chrome.storage.local.get(["cached_attendance", "last_attendance_sync"]);
+      const age = Date.now() - (stored.last_attendance_sync || 0);
+      if (age < 60000 && stored.cached_attendance && stored.cached_attendance.courses?.length > 0) {
         attendanceData = stored.cached_attendance;
       }
     }
 
-    // 2. Fetch live if not in cache or forced
+    // 2. Fetch live if not in cache or forced or cache expired
     if (!attendanceData) {
       if (!state.courses || state.courses.length === 0) {
         state.courses = await getLiveEnrolledCourses(state.sesskey);
@@ -1567,7 +1566,10 @@ async function loadLiveAttendanceData(force = false) {
       attendanceData = await fetchLiveAllAttendance(state.courses, state.sesskey, state.courseOccurrences);
 
       if (typeof chrome !== "undefined" && chrome.storage?.local) {
-        await chrome.storage.local.set({ cached_attendance: attendanceData });
+        await chrome.storage.local.set({
+          cached_attendance: attendanceData,
+          last_attendance_sync: Date.now()
+        });
       }
     }
 
@@ -1577,6 +1579,50 @@ async function loadLiveAttendanceData(force = false) {
     renderActiveOccurrenceBadges();
     renderOpenAttendanceBanner();
     renderAttendanceRecords();
+
+    // 3. Auto-Submit open attendance session if active and enabled
+    if (state.autoAttendanceEnabled && attendanceData.openSessions?.length > 0) {
+      for (const openItem of attendanceData.openSessions) {
+        const sess = openItem.session;
+        const occ = openItem.occurrence || state.courseOccurrences[openItem.courseId] || "";
+        const isOpen = sess.status === "open" && Boolean(sess.submitUrl);
+        const matchesOcc = isRespectiveOccurrence(sess.group, occ, sess.description, sess.activityName);
+
+        if (isOpen && matchesOcc && sess.submitUrl) {
+          const store = await chrome.storage.local.get(["recorded_attendance_sessids", "course_passwords"]);
+          const recorded = new Set(store.recorded_attendance_sessids || []);
+          if (!recorded.has(sess.sessid)) {
+            console.log(`[Spectra] Auto-submitting open session ${sess.sessid} for ${openItem.courseCode}...`);
+            const pwd = (store.course_passwords && (store.course_passwords[openItem.courseId] || store.course_passwords[openItem.courseCode])) || "";
+            try {
+              const res = await autoSubmitAttendance({
+                sessid: sess.sessid,
+                sesskey: state.sesskey,
+                attendanceUrl: sess.submitUrl,
+                password: pwd,
+                sessionGroup: sess.group,
+                sessionDescription: sess.description,
+                activityName: sess.activityName,
+                studentOccurrence: occ,
+                isOpen: true
+              });
+              if (res.success) {
+                recorded.add(sess.sessid);
+                await chrome.storage.local.set({ recorded_attendance_sessids: Array.from(recorded) });
+                showToast(`Auto-Attendance: Recorded Present for ${openItem.courseCode}!`, "success");
+                sess.status = "present";
+                sess.statusLabel = "Present";
+                renderAttendanceSummaryMetrics();
+                renderOpenAttendanceBanner();
+                renderAttendanceRecords();
+              }
+            } catch (subErr) {
+              console.warn("[Spectra] Auto-submission attempt notice:", subErr);
+            }
+          }
+        }
+      }
+    }
 
   } catch (err) {
     console.error("[Spectra] Error loading live attendance:", err);

@@ -99,7 +99,7 @@ export default {
         hasSession: Boolean(record?.sessionToken),
         coursesCount: record?.courses?.length || 0,
         updatedAt: record?.updatedAt ? new Date(record.updatedAt).toISOString() : null,
-        cronSchedule: "Every 15 minutes"
+        cronSchedule: "Every 1 minute"
       }), {
         headers: { "Content-Type": "application/json", ...corsHeaders }
       });
@@ -300,20 +300,56 @@ async function checkAndRecordCloudAttendance(env, sessionData) {
           const formHtml = await formRes.text();
 
           // Extract sesskey, sessid, and statusId for Present
-          const sesskeyM = formHtml.match(/name=["']sesskey["']\s+value=["']([^"']+)["']/i) || formHtml.match(/"sesskey":"([^"]+)"/);
+          const sesskeyM = formHtml.match(/name=["']sesskey["'][^>]*value=["']([^"']+)["']/i) ||
+                           formHtml.match(/value=["']([^"']+)["'][^>]*name=["']sesskey["']/i) ||
+                           formHtml.match(/"sesskey":"([^"]+)"/);
           const formSesskey = sesskeyM ? sesskeyM[1] : (sessionData.sesskey || "");
 
-          const formSessidM = formHtml.match(/name=["']sessid["']\s+value=["']([^"']+)["']/i);
+          const formSessidM = formHtml.match(/name=["']sessid["'][^>]*value=["']([^"']+)["']/i) ||
+                              formHtml.match(/value=["']([^"']+)["'][^>]*name=["']sessid["']/i);
           const formSessid = formSessidM ? formSessidM[1] : sessid;
 
           let statusId = null;
-          const radioRegex = /<input[^>]+type=["']radio["'][^>]+name=["']status["'][^>]+value=["'](\d+)["'][^>]*>([\s\S]*?)<\/label>/gi;
-          let rMatch;
-          while ((rMatch = radioRegex.exec(formHtml)) !== null) {
-            if (/present|hadir/i.test(rMatch[2])) {
-              statusId = rMatch[1];
+          const inputStatusRegex = /<input[^>]*name=["']status["'][^>]*>/gi;
+          let inMatch;
+          while ((inMatch = inputStatusRegex.exec(formHtml)) !== null) {
+            const tagStr = inMatch[0];
+            const valM = tagStr.match(/value=["'](\d+)["']/i);
+            const idM = tagStr.match(/id=["']([^"']+)["']/i);
+            if (!valM) continue;
+            const val = valM[1];
+
+            let isPresent = false;
+            if (idM) {
+              const labelForRegex = new RegExp(`<label[^>]*for=["']${idM[1]}["'][^>]*>([\\s\\S]*?)<\\/label>`, "i");
+              const lMatch = formHtml.match(labelForRegex);
+              if (lMatch && /present|hadir|^p\b/i.test(lMatch[1].replace(/<[^>]+>/g, "").trim())) {
+                isPresent = true;
+              }
+            }
+            if (!isPresent) {
+              const afterInput = formHtml.substring(inputStatusRegex.lastIndex, inputStatusRegex.lastIndex + 300);
+              const nextLabelM = afterInput.match(/^[\s\S]*?<label[^>]*>([\s\S]*?)<\/label>/i);
+              if (nextLabelM && /present|hadir|^p\b/i.test(nextLabelM[1].replace(/<[^>]+>/g, "").trim())) {
+                isPresent = true;
+              }
+            }
+            if (!isPresent) {
+              const surrounding = formHtml.substring(Math.max(0, inMatch.index - 50), Math.min(formHtml.length, inMatch.index + 200));
+              if (/present|hadir/i.test(surrounding)) {
+                isPresent = true;
+              }
+            }
+            if (isPresent) {
+              statusId = val;
               break;
             }
+          }
+
+          if (!statusId) {
+            const anyRadio = formHtml.match(/name=["']status["'][^>]*value=["'](\d+)["']/i) ||
+                             formHtml.match(/value=["'](\d+)["'][^>]*name=["']status["']/i);
+            if (anyRadio) statusId = anyRadio[1];
           }
 
           if (!statusId) continue;

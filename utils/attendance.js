@@ -150,6 +150,29 @@ export async function fetchCourseAttendance({ courseId, courseCode = "UM", sessk
     const defaultHtml = await fetchTabHtml(baseViewUrl);
     if (!defaultHtml) continue;
 
+    // Check if this URL is already an active attendance check-in form (e.g. /mod/attendance/attendance.php?sessid=...)
+    if (baseViewUrl.includes("attendance.php") || defaultHtml.includes('action="attendance.php"') || defaultHtml.includes("mform1")) {
+      const sessidM = baseViewUrl.match(/sessid=(\d+)/) || defaultHtml.match(/name=["']sessid["'][^>]*value=["'](\d+)["']/i);
+      const sessid = sessidM ? sessidM[1] : (cmid || "direct");
+      const key = sessid || `${sessid}_today_open_direct`;
+      allSessionsMap.set(key, {
+        id: sessid,
+        sessid: sessid,
+        date: "Today",
+        time: "Now",
+        description: instance.name || "Live Attendance Check-in",
+        group: "All students",
+        status: "open",
+        statusLabel: "Submit attendance",
+        points: "2 / 2",
+        remarks: "Open now",
+        submitUrl: baseViewUrl,
+        matchesOccurrence: true,
+        activityName: instance.name || "Attendance"
+      });
+      continue;
+    }
+
     // Parse tabs available on the page
     const tabs = parseAttendanceTabs(defaultHtml, cmid, SPECTRUM_BASE_URL);
 
@@ -173,7 +196,7 @@ export async function fetchCourseAttendance({ courseId, courseCode = "UM", sessk
     if (!primarySummary) primarySummary = parsedDefault.summary;
 
     for (const sess of parsedDefault.sessions) {
-      const key = `${sess.id || sess.sessid}_${sess.date}_${sess.time}_${sess.group}`;
+      const key = sess.sessid || `${sess.id || sess.sessid}_${sess.date}_${sess.time}_${sess.group}`;
       if (!allSessionsMap.has(key) || (!allSessionsMap.get(key).submitUrl && sess.submitUrl)) {
         allSessionsMap.set(key, { ...sess, activityName: instance.name });
       }
@@ -185,7 +208,7 @@ export async function fetchCourseAttendance({ courseId, courseCode = "UM", sessk
       if (tabHtml) {
         const parsedTab = parseAttendanceView(tabHtml, occurrence, referenceDate, instance.name);
         for (const sess of parsedTab.sessions) {
-          const key = `${sess.id || sess.sessid}_${sess.date}_${sess.time}_${sess.group}`;
+          const key = sess.sessid || `${sess.id || sess.sessid}_${sess.date}_${sess.time}_${sess.group}`;
           if (!allSessionsMap.has(key) || (!allSessionsMap.get(key).submitUrl && sess.submitUrl)) {
             allSessionsMap.set(key, { ...sess, activityName: instance.name });
           }
@@ -274,46 +297,19 @@ export async function fetchLiveAllAttendance(courses = [], sesskey, occurrencesM
   let validPercentSum = 0;
   let coursesWithAttendance = 0;
 
-  for (const course of courses) {
+  const coursePromises = courses.map(async (course) => {
     const occ = occurrencesMap[course.id] || occurrencesMap[course.code] || "";
     try {
-      const record = await fetchCourseAttendance({
+      return await fetchCourseAttendance({
         courseId: course.id,
         courseCode: course.code,
         sesskey,
         occurrence: occ,
         referenceDate
       });
-
-      records.push(record);
-
-      if (record.hasModule && record.summary.takenSessions > 0) {
-        coursesWithAttendance++;
-        totalPresent += record.summary.presentCount;
-        totalAbsent += record.summary.absentCount;
-        totalLate += record.summary.lateCount;
-        totalExcused += record.summary.excusedCount;
-        totalTakenSessions += record.summary.takenSessions;
-
-        const numPct = parseFloat(record.summary.percentage);
-        if (!isNaN(numPct)) {
-          validPercentSum += numPct;
-        }
-      }
-
-      if (record.hasOpenSession && record.openSession) {
-        openSessions.push({
-          courseId: course.id,
-          courseCode: course.code,
-          courseName: course.name,
-          viewUrl: record.viewUrl,
-          occurrence: occ,
-          session: record.openSession
-        });
-      }
     } catch (err) {
       console.warn(`[Spectra] Error fetching attendance for ${course.code}:`, err);
-      records.push({
+      return {
         courseId: course.id,
         courseCode: course.code,
         hasModule: false,
@@ -323,6 +319,42 @@ export async function fetchLiveAllAttendance(courses = [], sesskey, occurrencesM
         sessions: [],
         hasOpenSession: false,
         openSession: null
+      };
+    }
+  });
+
+  const settledRecords = await Promise.all(coursePromises);
+
+  for (let i = 0; i < courses.length; i++) {
+    const course = courses[i];
+    const record = settledRecords[i];
+    if (!record) continue;
+    const occ = occurrencesMap[course.id] || occurrencesMap[course.code] || "";
+
+    records.push(record);
+
+    if (record.hasModule && record.summary && record.summary.takenSessions > 0) {
+      coursesWithAttendance++;
+      totalPresent += record.summary.presentCount;
+      totalAbsent += record.summary.absentCount;
+      totalLate += record.summary.lateCount;
+      totalExcused += record.summary.excusedCount;
+      totalTakenSessions += record.summary.takenSessions;
+
+      const numPct = parseFloat(record.summary.percentage);
+      if (!isNaN(numPct)) {
+        validPercentSum += numPct;
+      }
+    }
+
+    if (record.hasOpenSession && record.openSession) {
+      openSessions.push({
+        courseId: course.id,
+        courseCode: course.code,
+        courseName: course.name,
+        viewUrl: record.openSession.viewUrl || record.viewUrl,
+        occurrence: occ,
+        session: record.openSession
       });
     }
   }

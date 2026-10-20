@@ -1611,33 +1611,97 @@ export function parseAttendanceForm(html) {
   let sesskey = null;
   let sessid = null;
 
-  // Extract sesskey & sessid
-  const sesskeyMatch = html.match(/name=["']sesskey["']\s+value=["']([^"']+)["']/i) || html.match(/"sesskey":"([^"]+)"/);
+  // Extract sesskey
+  const sesskeyMatch = html.match(/name=["']sesskey["'][^>]*value=["']([^"']+)["']/i) ||
+                       html.match(/value=["']([^"']+)["'][^>]*name=["']sesskey["']/i) ||
+                       html.match(/"sesskey":"([^"]+)"/);
   if (sesskeyMatch) sesskey = sesskeyMatch[1];
 
-  const sessidMatch = html.match(/name=["']sessid["']\s+value=["']([^"']+)["']/i);
+  // Extract sessid
+  const sessidMatch = html.match(/name=["']sessid["'][^>]*value=["']([^"']+)["']/i) ||
+                      html.match(/value=["']([^"']+)["'][^>]*name=["']sessid["']/i) ||
+                      html.match(/sessid=(\d+)/i);
   if (sessidMatch) sessid = sessidMatch[1];
 
   // Check if password field exists
-  if (/<input[^>]+name=["'](studentpassword|password)["']/i.test(html)) {
+  if (/<input[^>]+name=["'](studentpassword|password)["']/i.test(html) || /<input[^>]+type=["']password["']/i.test(html)) {
     requiresPassword = true;
   }
 
-  // Find radio button for Present / Hadir
-  const radioRegex = /<input[^>]+type=["']radio["'][^>]+name=["']status["'][^>]+value=["'](\d+)["'][^>]*>([\s\S]*?)<\/label>/gi;
-  let rMatch;
-  while ((rMatch = radioRegex.exec(html)) !== null) {
-    const val = rMatch[1];
-    const label = rMatch[2];
-    if (/present|hadir/i.test(label)) {
-      statusId = val;
-      break;
+  // 1. DOMParser approach if available (Browser context)
+  if (typeof DOMParser !== "undefined") {
+    try {
+      const doc = new DOMParser().parseFromString(html, "text/html");
+      const statusInputs = doc.querySelectorAll('input[name="status"]');
+      for (const input of statusInputs) {
+        const val = input.value;
+        const id = input.id;
+        let labelText = "";
+        if (id) {
+          const lbl = doc.querySelector(`label[for="${id}"]`);
+          if (lbl) labelText += " " + lbl.textContent;
+        }
+        const parentLabel = input.closest("label");
+        if (parentLabel) labelText += " " + parentLabel.textContent;
+        const nextElem = input.nextElementSibling;
+        if (nextElem && nextElem.tagName.toLowerCase() === "label") labelText += " " + nextElem.textContent;
+        if (input.parentElement) labelText += " " + input.parentElement.textContent;
+
+        const cleanLabel = labelText.trim();
+        if (/present|hadir|^p\b/i.test(cleanLabel)) {
+          statusId = val;
+          break;
+        }
+      }
+    } catch (_) {}
+  }
+
+  // 2. Fallback: Robust regex search across all status radio inputs
+  if (!statusId) {
+    const inputStatusRegex = /<input[^>]*name=["']status["'][^>]*>/gi;
+    let inMatch;
+    while ((inMatch = inputStatusRegex.exec(html)) !== null) {
+      const tagStr = inMatch[0];
+      const valM = tagStr.match(/value=["'](\d+)["']/i);
+      const idM = tagStr.match(/id=["']([^"']+)["']/i);
+      if (!valM) continue;
+      const val = valM[1];
+
+      let isPresent = false;
+      if (idM) {
+        const labelForRegex = new RegExp(`<label[^>]*for=["']${idM[1]}["'][^>]*>([\\s\\S]*?)<\\/label>`, "i");
+        const lMatch = html.match(labelForRegex);
+        if (lMatch && /present|hadir|^p\b/i.test(lMatch[1].replace(/<[^>]+>/g, "").trim())) {
+          isPresent = true;
+        }
+      }
+
+      if (!isPresent) {
+        const afterInput = html.substring(inputStatusRegex.lastIndex, inputStatusRegex.lastIndex + 300);
+        const nextLabelM = afterInput.match(/^[\s\S]*?<label[^>]*>([\s\S]*?)<\/label>/i);
+        if (nextLabelM && /present|hadir|^p\b/i.test(nextLabelM[1].replace(/<[^>]+>/g, "").trim())) {
+          isPresent = true;
+        }
+      }
+
+      if (!isPresent) {
+        const surrounding = html.substring(Math.max(0, inMatch.index - 50), Math.min(html.length, inMatch.index + 200));
+        if (/present|hadir/i.test(surrounding)) {
+          isPresent = true;
+        }
+      }
+
+      if (isPresent) {
+        statusId = val;
+        break;
+      }
     }
   }
 
-  // Fallback: If label tag wasn't adjacent, search for status radio value
+  // 3. Fallback: If no label matched, pick first status input value
   if (!statusId) {
-    const anyRadio = html.match(/name=["']status["'][^>]+value=["'](\d+)["']/i);
+    const anyRadio = html.match(/name=["']status["'][^>]*value=["'](\d+)["']/i) ||
+                     html.match(/value=["'](\d+)["'][^>]*name=["']status["']/i);
     if (anyRadio) statusId = anyRadio[1];
   }
 

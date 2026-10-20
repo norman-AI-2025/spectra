@@ -173,18 +173,26 @@ export async function verifyAndFetchSesskey(sessionCookie) {
   // 1. Programmatically align browser cookie store with active session
   await injectCookieToBrowser(cleanCookie);
 
-  // 2. Query SPeCTRUM Dashboard (https://spectrum.um.edu.my/my/)
+  // 2. Query SPeCTRUM Dashboard (https://spectrum.um.edu.my/my/) with timeout
   let response;
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const timeoutId = controller ? setTimeout(() => controller.abort(), 8000) : null;
   try {
     response = await fetch(`${SPECTRUM_BASE_URL}/my/`, {
       method: "GET",
       credentials: "include",
+      signal: controller ? controller.signal : undefined,
       headers: {
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
       }
     });
   } catch (netErr) {
+    if (netErr.name === "AbortError") {
+      throw new Error("Connection to SPeCTRUM timed out (server took too long to respond).");
+    }
     throw new Error(`Network error connecting to SPeCTRUM: ${netErr.message}`);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
   }
 
   // 3. Inspect response URL and redirects

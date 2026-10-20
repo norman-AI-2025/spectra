@@ -13,6 +13,9 @@
   // Auto-capture session on page load
   captureLiveSession();
 
+  // Instant in-page auto-attendance and session watcher
+  initInPageAttendance();
+
   // Listen for requests from Spectra popup or background worker
   if (typeof chrome !== "undefined" && chrome.runtime?.onMessage) {
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -314,5 +317,233 @@
     }
 
     return payload;
+  }
+
+  // -------------------------------------------------------------
+  // Instant In-Page Auto-Attendance Engine & Live Watcher
+  // -------------------------------------------------------------
+  async function initInPageAttendance() {
+    if (typeof chrome === "undefined" || !chrome.storage?.local) return;
+
+    try {
+      const store = await chrome.storage.local.get([
+        "pref_auto_attendance",
+        "course_occurrences",
+        "course_passwords",
+        "recorded_attendance_sessids"
+      ]);
+
+      const isAutoEnabled = store.pref_auto_attendance !== false;
+      if (!isAutoEnabled) {
+        console.log("[Spectra Content] Auto-attendance paused in user preferences.");
+        return;
+      }
+
+      const currentUrl = window.location.href;
+
+      // 1. PAGE: /mod/attendance/attendance.php (The check-in form itself)
+      if (currentUrl.includes("/mod/attendance/attendance.php")) {
+        handleAttendanceFormPage(store);
+        return;
+      }
+
+      // 2. PAGE: /mod/attendance/view.php (Attendance session records table)
+      if (currentUrl.includes("/mod/attendance/view.php")) {
+        handleAttendanceViewPage(store);
+        return;
+      }
+
+      // 3. PAGE: /course/view.php (Course home page)
+      if (currentUrl.includes("/course/view.php")) {
+        handleCourseViewPage(store);
+        return;
+      }
+    } catch (e) {
+      console.warn("[Spectra Content] Error initializing in-page attendance:", e);
+    }
+  }
+
+  function handleAttendanceFormPage(store) {
+    console.log("[Spectra Attendance] Active on attendance form page:", window.location.href);
+
+    // Check if attendance is already recorded
+    const bodyText = document.body ? document.body.innerText : "";
+    if (
+      bodyText.includes("Your attendance has been recorded") ||
+      bodyText.includes("Kehadiran anda telah direkodkan") ||
+      bodyText.includes("Attendance has been recorded")
+    ) {
+      showSpectraToast("Attendance recorded as Present! ✅", "success");
+      const sessidMatch = window.location.href.match(/sessid=(\d+)/);
+      if (sessidMatch) {
+        chrome.runtime.sendMessage({
+          action: "RECORD_ATTENDANCE_SUCCESS",
+          payload: { sessid: sessidMatch[1], status: "Present" }
+        }).catch(() => {});
+      }
+      return;
+    }
+
+    const form = document.querySelector('form[action*="attendance.php"], form#mform1');
+    if (!form) return;
+
+    // Extract sessid
+    const sessidInput = form.querySelector('input[name="sessid"]');
+    const sessidMatch = window.location.href.match(/sessid=(\d+)/);
+    const sessid = sessidInput ? sessidInput.value : (sessidMatch ? sessidMatch[1] : null);
+
+    // Find Present / Hadir radio button
+    const radioInputs = form.querySelectorAll('input[name="status"]');
+    let presentRadio = null;
+
+    for (const r of radioInputs) {
+      const id = r.id;
+      const label = id ? document.querySelector(`label[for="${id}"]`) : null;
+      const parentLabel = r.closest("label");
+      const text = `${label?.textContent || ""} ${parentLabel?.textContent || ""} ${r.parentElement?.textContent || ""}`.trim();
+      if (/present|hadir|^p\b/i.test(text)) {
+        presentRadio = r;
+        break;
+      }
+    }
+
+    if (!presentRadio && radioInputs.length > 0) {
+      presentRadio = radioInputs[0];
+    }
+
+    if (!presentRadio) {
+      console.warn("[Spectra Attendance] Present option not found in form.");
+      return;
+    }
+
+    // Select the Present radio button
+    presentRadio.checked = true;
+    presentRadio.dispatchEvent(new Event("change", { bubbles: true }));
+    presentRadio.dispatchEvent(new Event("click", { bubbles: true }));
+
+    // Check password field
+    const pwdInput = form.querySelector('input[name="studentpassword"], input[name="password"], input[type="password"]');
+    if (pwdInput) {
+      const passwordsMap = store.course_passwords || {};
+      let matchedPwd = "";
+      for (const val of Object.values(passwordsMap)) {
+        if (val && String(val).trim()) {
+          matchedPwd = String(val).trim();
+          break;
+        }
+      }
+
+      if (matchedPwd) {
+        pwdInput.value = matchedPwd;
+        pwdInput.dispatchEvent(new Event("input", { bubbles: true }));
+        pwdInput.dispatchEvent(new Event("change", { bubbles: true }));
+      } else {
+        pwdInput.focus();
+        pwdInput.style.outline = "3px solid #f59e0b";
+        showSpectraToast("Password required: please enter password and submit.", "warning");
+        return;
+      }
+    }
+
+    // Find submit button
+    const submitBtn = form.querySelector('input[type="submit"], button[type="submit"], input#id_submitbutton');
+    if (submitBtn) {
+      showSpectraToast("Submitting attendance as Present... ⏳", "info");
+      setTimeout(() => {
+        submitBtn.click();
+      }, 300);
+    }
+  }
+
+  function handleAttendanceViewPage(store) {
+    console.log("[Spectra Attendance] Active on attendance view page:", window.location.href);
+
+    function scanForOpenSessions() {
+      const submitLinks = document.querySelectorAll('a[href*="attendance.php?sessid="]');
+      if (submitLinks.length === 0) return false;
+
+      // Extract course code or occurrence context if available
+      const courseIdMatch = window.location.href.match(/id=(\d+)/);
+      const courseId = courseIdMatch ? courseIdMatch[1] : "";
+      const preferredOcc = (store.course_occurrences && store.course_occurrences[courseId]) || "";
+
+      for (const link of submitLinks) {
+        const row = link.closest("tr");
+        const rowText = row ? row.innerText : "";
+        const linkText = link.innerText.trim();
+
+        if (/submit|hantar|rekod/i.test(linkText) || /submit|hantar|rekod/i.test(rowText)) {
+          console.log("[Spectra Attendance] Open session detected! Navigating to form:", link.href);
+          showSpectraToast("Open attendance session found! Auto-submitting... 🚀", "success");
+          window.location.href = link.href;
+          return true;
+        }
+      }
+      return false;
+    }
+
+    // Check immediately on page load
+    const found = scanForOpenSessions();
+
+    // If not found yet, set a gentle 10s poll to watch when lecturer opens it
+    if (!found) {
+      const watchInterval = setInterval(() => {
+        if (scanForOpenSessions()) {
+          clearInterval(watchInterval);
+        }
+      }, 10000);
+    }
+  }
+
+  function handleCourseViewPage(store) {
+    const directAttendanceLinks = document.querySelectorAll('a[href*="/mod/attendance/attendance.php?sessid="]');
+    if (directAttendanceLinks.length > 0) {
+      console.log("[Spectra Attendance] Direct attendance link found on course page:", directAttendanceLinks[0].href);
+      showSpectraToast("Active attendance link detected! Auto-navigating... 🚀", "success");
+      setTimeout(() => {
+        window.location.href = directAttendanceLinks[0].href;
+      }, 500);
+    }
+  }
+
+  function showSpectraToast(message, type = "info") {
+    const existing = document.getElementById("spectra-inpage-toast");
+    if (existing) existing.remove();
+
+    const toast = document.createElement("div");
+    toast.id = "spectra-inpage-toast";
+    const bgColors = {
+      success: "#059669",
+      warning: "#d97706",
+      error: "#dc2626",
+      info: "#2563eb"
+    };
+
+    toast.style.cssText = `
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      z-index: 999999;
+      background: ${bgColors[type] || bgColors.info};
+      color: #ffffff;
+      padding: 12px 20px;
+      border-radius: 8px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 14px;
+      font-weight: 600;
+      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.25);
+      transition: opacity 0.3s ease, transform 0.3s ease;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    `;
+    toast.textContent = message;
+    document.body.appendChild(toast);
+
+    setTimeout(() => {
+      toast.style.opacity = "0";
+      toast.style.transform = "translateY(10px)";
+      setTimeout(() => toast.remove(), 400);
+    }, 4000);
   }
 })();

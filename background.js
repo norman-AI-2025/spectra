@@ -75,7 +75,43 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   await setupAlarms(stored.poll_interval_mins || 15);
 
   // Check active session cookie
-  await checkActiveSession();
+  const session = await checkActiveSession();
+  if (session.authenticated && session.session?.value) {
+    await setupDeclarativeCookieRule(session.session.value);
+  }
+
+  // Run initial auto-attendance check
+  await checkAutoAttendance();
+});
+
+// Browser Startup Listener
+chrome.runtime.onStartup.addListener(async () => {
+  console.log("[Spectra] Browser started up: refreshing alarms & running attendance check.");
+  const stored = await chrome.storage.local.get(["poll_interval_mins"]);
+  await setupAlarms(stored.poll_interval_mins || 15);
+  const session = await checkActiveSession();
+  if (session.authenticated && session.session?.value) {
+    await setupDeclarativeCookieRule(session.session.value);
+  }
+  await checkAutoAttendance();
+});
+
+// Tab Navigation Listener (Triggers attendance scan when student opens SPeCTRUM in active tab)
+let lastTabAttendanceScan = 0;
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+  if (changeInfo.status === "complete" && tab.url && tab.url.includes("spectrum.um.edu.my")) {
+    const now = Date.now();
+    // Throttle to at most once every 60 seconds
+    if (now - lastTabAttendanceScan > 60000) {
+      lastTabAttendanceScan = now;
+      console.log("[Spectra] SPeCTRUM active tab navigation detected. Scheduling attendance check.");
+      const stored = await chrome.storage.local.get(["moodle_session"]);
+      if (stored.moodle_session?.value) {
+        await setupDeclarativeCookieRule(stored.moodle_session.value);
+      }
+      await checkAutoAttendance();
+    }
+  }
 });
 
 // Setup periodic alarms
@@ -84,23 +120,25 @@ async function setupAlarms(intervalMinutes = 15) {
 
   // Announcement polling alarm
   chrome.alarms.create("spectra_poll_announcements", {
-    periodInMinutes: Math.max(5, intervalMinutes),
+    periodInMinutes: Math.max(1, intervalMinutes),
     delayInMinutes: 1
   });
 
-  // Urgent deadline checker alarm (every 30 mins)
+  // Urgent deadline checker alarm (every 15-30 mins)
   chrome.alarms.create("spectra_check_deadlines", {
-    periodInMinutes: 30,
-    delayInMinutes: 5
-  });
-
-  // Auto-attendance scanner alarm (every 15 mins)
-  chrome.alarms.create("spectra_check_attendance", {
-    periodInMinutes: Math.max(10, intervalMinutes),
+    periodInMinutes: Math.max(15, Math.min(30, intervalMinutes * 2)),
     delayInMinutes: 2
   });
 
-  console.log(`[Spectra] Alarms registered with ${intervalMinutes}m interval.`);
+  // Auto-attendance scanner alarm:
+  // Scans frequently (every 1-2 mins) so short attendance windows are never missed!
+  const attInterval = Math.max(1, Math.min(intervalMinutes, 2));
+  chrome.alarms.create("spectra_check_attendance", {
+    periodInMinutes: attInterval,
+    delayInMinutes: 0.1
+  });
+
+  console.log(`[Spectra] Alarms registered: Attendance=${attInterval}m, Announcements=${intervalMinutes}m.`);
 }
 
 // -------------------------------------------------------------
@@ -119,6 +157,8 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 // -------------------------------------------------------------
 // Cookie Listener (MoodleSession on spectrum.um.edu.my)
 // -------------------------------------------------------------
+let lastKnownCookieValue = null;
+
 chrome.cookies.onChanged.addListener(async (changeInfo) => {
   const { cookie, removed } = changeInfo;
   if (!cookie.domain.includes("spectrum.um.edu.my") || cookie.name !== COOKIE_NAME) {
@@ -127,6 +167,7 @@ chrome.cookies.onChanged.addListener(async (changeInfo) => {
 
   if (removed) {
     console.log("[Spectra] MoodleSession cookie cleared.");
+    lastKnownCookieValue = null;
     await chrome.storage.local.set({
       moodle_session: null,
       moodle_session_valid: false,
@@ -134,6 +175,13 @@ chrome.cookies.onChanged.addListener(async (changeInfo) => {
     });
     return;
   }
+
+  // Prevent feedback loop: ignore cookie touch/expiry updates if token value has not changed
+  if (cookie.value === lastKnownCookieValue) {
+    return;
+  }
+  const isInitialOrChanged = lastKnownCookieValue !== null && lastKnownCookieValue !== cookie.value;
+  lastKnownCookieValue = cookie.value;
 
   const sessionData = {
     value: cookie.value,
@@ -151,10 +199,20 @@ chrome.cookies.onChanged.addListener(async (changeInfo) => {
     moodle_session_updated: Date.now()
   });
 
+  // Attach DeclarativeNetRequest header rule with new cookie
+  if (sessionData.value) {
+    await setupDeclarativeCookieRule(sessionData.value);
+  }
+
   // Trigger Cloud Relay Sync if enabled
   const config = await chrome.storage.local.get(["cloud_relay_enabled", "cloud_relay_url", "cloud_relay_secret"]);
   if (config.cloud_relay_enabled && config.cloud_relay_url) {
     await syncSessionToCloudRelay(sessionData, config.cloud_relay_url, config.cloud_relay_secret);
+  }
+
+  // Only trigger immediate attendance check if the session cookie was newly established or changed
+  if (isInitialOrChanged) {
+    await checkAutoAttendance();
   }
 });
 
@@ -475,45 +533,74 @@ async function checkUpcomingDeadlines() {
 // -------------------------------------------------------------
 // Live Auto-Attendance Scanner (< 15 Mins / On Open)
 // -------------------------------------------------------------
+let isAttendanceScanning = false;
+let lastAttendanceScanTime = 0;
+
 async function checkAutoAttendance() {
-  const store = await chrome.storage.local.get([
-    "pref_auto_attendance",
-    "course_occurrences",
-    "course_passwords",
-    "recorded_attendance_sessids",
-    "telegram_bot_token",
-    "telegram_chat_id",
-    "ntfy_topic"
-  ]);
-
-  // Default to true if not explicitly turned off
-  const autoAttendanceEnabled = store.pref_auto_attendance !== false;
-  if (!autoAttendanceEnabled) return;
-
-  const hasTelegram = Boolean(store.telegram_bot_token && store.telegram_chat_id);
-  const hasNtfy = Boolean(store.ntfy_topic);
-
-  let sessionContext;
-  try {
-    sessionContext = await getSessionContext();
-  } catch (err) {
-    console.log("[Spectra] Attendance scan skipped: not authenticated.");
+  const now = Date.now();
+  // Concurrency & rate-limiting guard: skip if already running or ran < 30 seconds ago
+  if (isAttendanceScanning || (now - lastAttendanceScanTime < 30000)) {
+    console.log("[Spectra] Attendance scan skipped (already running or throttled <30s).");
     return;
   }
-
-  let courses = [];
-  try {
-    courses = await getLiveEnrolledCourses(sessionContext.sesskey);
-  } catch (err) {
-    console.warn("[Spectra] Error loading courses for attendance check:", err);
-    return;
-  }
-
-  const occurrencesMap = store.course_occurrences || {};
-  const passwordsMap = store.course_passwords || {};
-  const recordedSessids = new Set(store.recorded_attendance_sessids || []);
+  isAttendanceScanning = true;
+  lastAttendanceScanTime = now;
 
   try {
+    const store = await chrome.storage.local.get([
+      "pref_auto_attendance",
+      "course_occurrences",
+      "course_passwords",
+      "recorded_attendance_sessids",
+      "telegram_bot_token",
+      "telegram_chat_id",
+      "ntfy_topic",
+      "cached_courses",
+      "courses",
+      "moodle_session"
+    ]);
+
+    // Default to true if not explicitly turned off
+    const autoAttendanceEnabled = store.pref_auto_attendance !== false;
+    if (!autoAttendanceEnabled) return;
+
+    const hasTelegram = Boolean(store.telegram_bot_token && store.telegram_chat_id);
+    const hasNtfy = Boolean(store.ntfy_topic);
+
+    let sessionContext;
+    try {
+      sessionContext = await getSessionContext();
+    } catch (err) {
+      console.log("[Spectra] Attendance scan skipped: not authenticated.");
+      return;
+    }
+
+    // Ensure DeclarativeNetRequest dynamic cookie rule is attached
+    if (store.moodle_session?.value) {
+      await setupDeclarativeCookieRule(store.moodle_session.value);
+    }
+
+    let courses = [];
+    try {
+      courses = await getLiveEnrolledCourses(sessionContext.sesskey);
+    } catch (err) {
+      console.warn("[Spectra] Error loading live courses for attendance check:", err);
+    }
+
+    // Fallback to cached courses if live query returned empty
+    if (!courses || courses.length === 0) {
+      courses = store.cached_courses || store.courses || [];
+    }
+
+    if (!courses || courses.length === 0) {
+      console.log("[Spectra] Attendance scan paused: no enrolled courses found.");
+      return;
+    }
+
+    const occurrencesMap = store.course_occurrences || {};
+    const passwordsMap = store.course_passwords || {};
+    const recordedSessids = new Set(store.recorded_attendance_sessids || []);
+
     const { attendance, actions } = await scanAndAutoRecordAttendance({
       courses,
       sesskey: sessionContext.sesskey,
@@ -587,6 +674,8 @@ async function checkAutoAttendance() {
     });
   } catch (err) {
     console.warn("[Spectra] Error during auto-attendance run:", err);
+  } finally {
+    isAttendanceScanning = false;
   }
 }
 
@@ -776,6 +865,51 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             password
           });
           sendResponse(result);
+          break;
+        }
+
+        case "RECORD_ATTENDANCE_SUCCESS": {
+          const { sessid, courseCode, status = "Present", sessionDescription, url } = payload || {};
+          const store = await chrome.storage.local.get([
+            "recorded_attendance_sessids",
+            "telegram_bot_token",
+            "telegram_chat_id",
+            "ntfy_topic"
+          ]);
+
+          const recorded = new Set(store.recorded_attendance_sessids || []);
+          if (sessid && !recorded.has(sessid)) {
+            recorded.add(sessid);
+            await chrome.storage.local.set({ recorded_attendance_sessids: Array.from(recorded) });
+
+            if (store.telegram_bot_token && store.telegram_chat_id) {
+              try {
+                const html = formatAttendanceTelegram({
+                  courseCode: courseCode || "SPeCTRUM Class",
+                  occurrence: "General",
+                  status,
+                  sessionDescription: sessionDescription || "In-Page Auto-Checkin",
+                  time: "Just now",
+                  success: true
+                });
+                await sendTelegramMessage(store.telegram_bot_token, store.telegram_chat_id, html);
+              } catch (e) {
+                console.error("[Spectra] Failed dispatching Telegram alert for in-page attendance:", e);
+              }
+            }
+
+            if (store.ntfy_topic) {
+              try {
+                await sendNtfyMessage(
+                  store.ntfy_topic,
+                  `Spectra Auto-Attendance: ${courseCode || "Class"} Present!`,
+                  `Recorded Present automatically on SPeCTRUM.`,
+                  url || "https://spectrum.um.edu.my"
+                );
+              } catch (_) {}
+            }
+          }
+          sendResponse({ success: true });
           break;
         }
 
