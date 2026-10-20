@@ -172,12 +172,29 @@ globalThis.fetch = async function mockFetch(url, options = {}) {
     };
   }
 
-  // Mock SPeCTRUM attendance submission POST
-  if (url.includes("spectrum.um.edu.my/mod/attendance/attendance.php") && options.method === "POST") {
+  // Mock SPeCTRUM forum index
+  if (url.includes("spectrum.um.edu.my/mod/forum/index.php")) {
     return {
       status: 200,
       ok: true,
-      text: async () => `<div class="alert-success">Attendance recorded</div>`
+      text: async () => `<a href="https://spectrum.um.edu.my/mod/forum/view.php?id=8801">Announcements</a>`
+    };
+  }
+
+  // Mock SPeCTRUM forum view
+  if (url.includes("spectrum.um.edu.my/mod/forum/view.php")) {
+    return {
+      status: 200,
+      ok: true,
+      text: async () => `
+        <table>
+          <tr>
+            <td><a href="https://spectrum.um.edu.my/mod/forum/discuss.php?d=5501">Replacement Class Scheduled</a></td>
+            <td>Dr. Lecturer</td>
+            <td>20 Oct 2024</td>
+          </tr>
+        </table>
+      `
     };
   }
 
@@ -363,6 +380,22 @@ async function runTestSuite() {
   // Verify recorded sessid was stored in KV to prevent double check-ins
   const storedRecorded = await kv.get("recorded_sessids");
   assert(storedRecorded !== null && storedRecorded.includes("7701"), "Sessid 7701 stored in recorded_sessids in KV");
+
+  // Test 12: 24/7 Cloud Announcement Polling & Telegram Alert
+  print("\nTest 12: 24/7 Cloud Announcement Polling");
+  // Seed initial KV so next poll triggers alert for new announcement
+  await kv.put("sent_announcement_ids", JSON.stringify(["5500"]));
+  const req12 = new MockRequest("https://worker.spectra.dev/poll", {
+    method: "POST",
+    headers: { "Authorization": "Bearer test-auth-secret-123" }
+  });
+  const res12 = await worker.fetch(req12, env, new MockExecutionContext());
+  assert(res12.status === 200, "POST /poll executes successfully for announcements");
+  const body12 = await res12.json();
+  assert(body12.announcementsSent >= 1, "Dispatched Telegram alert for new announcement 5501");
+
+  const storedAnnouncements = await kv.get("sent_announcement_ids");
+  assert(storedAnnouncements !== null && storedAnnouncements.includes("5501"), "Announcement 5501 persisted in sent_announcement_ids in KV");
 
   // Summary
   print("\n=================================================================");

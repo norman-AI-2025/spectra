@@ -174,13 +174,18 @@ async function runSpectrumPollingJob(env) {
     // 3. 24/7 Cloud Submission Deadline Scanner & Urgent Alert Dispatch
     const deadlineResult = await checkCloudDeadlines(env, sessionData);
 
+    // 4. 24/7 Cloud Course Announcement Scanner & Telegram Dispatch
+    const announcementResult = await checkCloudAnnouncements(env, sessionData);
+
     return {
       status: "ok",
       timestamp: Date.now(),
       attendanceChecked: attendanceResult.checked,
       attendanceRecorded: attendanceResult.recorded,
       deadlinesChecked: deadlineResult.checked,
-      deadlinesAlerted: deadlineResult.alerted
+      deadlinesAlerted: deadlineResult.alerted,
+      announcementsChecked: announcementResult.checked,
+      announcementsSent: announcementResult.sent
     };
   } catch (err) {
     console.error("[Spectra Relay] Polling job failed:", err);
@@ -640,4 +645,158 @@ function parseWorkerDateString(dateStr) {
   const d = new Date(raw);
   return !isNaN(d.getTime()) ? d.getTime() : null;
 }
+
+/**
+ * 24/7 Cloud Announcement Scanner & Telegram Alert Routine
+ * Discovers course forums, parses new instructor announcements,
+ * and sends instant Telegram alerts with direct discussion links.
+ */
+async function checkCloudAnnouncements(env, sessionData) {
+  const { sessionToken, courses = [] } = sessionData;
+  if (!courses || courses.length === 0) {
+    return { checked: 0, sent: 0 };
+  }
+
+  const cookieHeader = `MoodleSession=${sessionToken}`;
+  const botToken = env.TELEGRAM_BOT_TOKEN;
+  const chatId = env.TELEGRAM_CHAT_ID;
+  if (!botToken || !chatId) {
+    return { checked: 0, sent: 0 };
+  }
+
+  let sentAnnouncementIds = new Set();
+  let isFirstRun = false;
+  if (env.SPECTRA_KV) {
+    const rawSent = await env.SPECTRA_KV.get("sent_announcement_ids");
+    if (rawSent) {
+      try {
+        sentAnnouncementIds = new Set(JSON.parse(rawSent));
+      } catch (_) {}
+    } else {
+      isFirstRun = true;
+    }
+  }
+
+  let sentCount = 0;
+  let checkedCourses = 0;
+
+  for (const course of courses) {
+    const courseId = course.id;
+    const courseCode = course.code || course.id;
+
+    try {
+      // 1. Discover forum view URLs: first try /mod/forum/index.php, then /course/view.php
+      const forumUrls = new Set();
+
+      try {
+        const indexRes = await fetch(`https://spectrum.um.edu.my/mod/forum/index.php?id=${encodeURIComponent(courseId)}`, {
+          headers: { "Cookie": cookieHeader, "User-Agent": "Mozilla/5.0 Spectra-Relay/1.0" }
+        });
+        if (indexRes.ok) {
+          const indexHtml = await indexRes.text();
+          const fMatches = indexHtml.match(/href=["']([^"']*\/mod\/forum\/view\.php\?id=\d+[^"']*)["']/gi) || [];
+          for (const m of fMatches) {
+            const urlM = m.match(/href=["']([^"']+)["']/i);
+            if (urlM) {
+              let u = urlM[1];
+              if (!u.startsWith("http")) u = `https://spectrum.um.edu.my/${u.replace(/^\//, "")}`;
+              forumUrls.add(u);
+            }
+          }
+        }
+      } catch (_) {}
+
+      // Fallback: check course page if index gave no forums
+      if (forumUrls.size === 0) {
+        try {
+          const courseRes = await fetch(`https://spectrum.um.edu.my/course/view.php?id=${encodeURIComponent(courseId)}`, {
+            headers: { "Cookie": cookieHeader, "User-Agent": "Mozilla/5.0 Spectra-Relay/1.0" }
+          });
+          if (courseRes.ok) {
+            const courseHtml = await courseRes.text();
+            const fMatches = courseHtml.match(/href=["']([^"']*\/mod\/forum\/view\.php\?id=\d+[^"']*)["']/gi) || [];
+            for (const m of fMatches) {
+              const urlM = m.match(/href=["']([^"']+)["']/i);
+              if (urlM) {
+                let u = urlM[1];
+                if (!u.startsWith("http")) u = `https://spectrum.um.edu.my/${u.replace(/^\//, "")}`;
+                forumUrls.add(u);
+              }
+            }
+          }
+        } catch (_) {}
+      }
+
+      if (forumUrls.size === 0) continue;
+      checkedCourses++;
+
+      // 2. Scan discussions in each forum
+      for (const fUrl of forumUrls) {
+        const forumRes = await fetch(fUrl, {
+          headers: { "Cookie": cookieHeader, "User-Agent": "Mozilla/5.0 Spectra-Relay/1.0" }
+        });
+        if (!forumRes.ok) continue;
+        const forumHtml = await forumRes.text();
+
+        // Parse discussion rows
+        const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+        let rowM;
+        while ((rowM = rowRegex.exec(forumHtml)) !== null) {
+          const rowHtml = rowM[1];
+          const topicMatch = rowHtml.match(/<a[^>]*href=["']([^"']*discuss\.php\?d=(\d+)[^"']*)["'][^>]*>([\s\S]*?)<\/a>/i);
+          if (!topicMatch) continue;
+
+          const rawDiscussUrl = topicMatch[1];
+          const discussionId = topicMatch[2];
+          const rawSubject = topicMatch[3].replace(/<[^>]+>/g, "").trim();
+          if (!rawSubject) continue;
+
+          // If already sent, skip
+          if (sentAnnouncementIds.has(discussionId)) continue;
+
+          // If this is the initial run with empty KV, seed existing announcements without blasting spam
+          if (isFirstRun) {
+            sentAnnouncementIds.add(discussionId);
+            continue;
+          }
+
+          // Extract author & date if available
+          const cellRegex = /<td[^>]*>([\s\S]*?)<\/td>/gi;
+          const cells = [];
+          let cM;
+          while ((cM = cellRegex.exec(rowHtml)) !== null) {
+            cells.push(cM[1].replace(/<[^>]+>/g, "").trim());
+          }
+
+          const author = cells[1] || cells[2] || "Course Instructor";
+          const dateText = cells[cells.length - 1] || "Recent";
+          const fullDiscussUrl = rawDiscussUrl.startsWith("http")
+            ? rawDiscussUrl
+            : `https://spectrum.um.edu.my/${rawDiscussUrl.replace(/^\//, "")}`;
+
+          await dispatchTelegram(
+            botToken,
+            chatId,
+            `📢 <b>Spectra Announcement: ${courseCode}</b>\n` +
+            `<b>Topic:</b> ${rawSubject}\n` +
+            `<b>Author:</b> ${author} (${dateText})\n` +
+            `🔗 <a href="${fullDiscussUrl}">Read Discussion on SPeCTRUM</a>`
+          );
+
+          sentAnnouncementIds.add(discussionId);
+          sentCount++;
+        }
+      }
+    } catch (err) {
+      console.warn(`[Spectra Relay] Error checking announcements for ${courseCode}:`, err);
+    }
+  }
+
+  if (env.SPECTRA_KV && (sentCount > 0 || isFirstRun)) {
+    await env.SPECTRA_KV.put("sent_announcement_ids", JSON.stringify(Array.from(sentAnnouncementIds)));
+  }
+
+  return { checked: checkedCourses, sent: sentCount };
+}
+
 
