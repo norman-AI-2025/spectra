@@ -2420,6 +2420,15 @@ async function handleManualCloudSync() {
     return;
   }
 
+  // Auto-persist configured relay endpoint and secret to storage
+  if (typeof chrome !== "undefined" && chrome.storage?.local) {
+    await chrome.storage.local.set({
+      cloud_relay_url: relayUrl,
+      cloud_relay_secret: secretKey,
+      cloud_relay_enabled: true
+    });
+  }
+
   const btn = document.getElementById("syncCloudNowBtn");
   const origText = btn.innerHTML;
   btn.disabled = true;

@@ -5,6 +5,7 @@ Local Cloud Relay Development Server (Port 8787)
 Emulates Cloudflare Worker runtime & KV for local testing with the Chrome extension.
 """
 
+import os
 import sys
 import json
 import time
@@ -13,9 +14,26 @@ from urllib.parse import urlparse
 
 PORT = 8787
 DEFAULT_SECRET = "worker-auth-secret-key"
+KV_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".kv_store.json")
 
-# In-memory KV Store
-KV_STORE = {}
+def load_kv():
+    if os.path.exists(KV_FILE):
+        try:
+            with open(KV_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"[LOCAL RELAY] ⚠️ Warning: Failed to load {KV_FILE}: {e}")
+    return {}
+
+def save_kv(data):
+    try:
+        with open(KV_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        print(f"[LOCAL RELAY] ⚠️ Warning: Failed to save {KV_FILE}: {e}")
+
+# Persistent Local KV Store (survives restarts)
+KV_STORE = load_kv()
 
 class CloudRelayHandler(BaseHTTPRequestHandler):
     def _send_cors_headers(self):
@@ -95,15 +113,16 @@ class CloudRelayHandler(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps({"error": "Missing sessionToken"}).encode("utf-8"))
                 return
 
-            # Store in KV
+            # Store in KV and persist to disk
             KV_STORE["moodle_session"] = {
                 "sessionToken": session_token,
                 "domain": body.get("domain", "spectrum.um.edu.my"),
                 "expires": body.get("expires"),
                 "updatedAt": int(time.time() * 1000)
             }
+            save_kv(KV_STORE)
 
-            print(f"[LOCAL RELAY] ✅ Successfully synced MoodleSession: {session_token[:6]}••••••")
+            print(f"[LOCAL RELAY] ✅ Successfully synced MoodleSession: {session_token[:6]}•••••• (saved to {os.path.basename(KV_FILE)})")
 
             self.send_response(200)
             self._send_cors_headers()
@@ -141,11 +160,16 @@ class CloudRelayHandler(BaseHTTPRequestHandler):
 
 def run_server():
     server = HTTPServer(("127.0.0.1", PORT), CloudRelayHandler)
+    saved_session = KV_STORE.get("moodle_session")
     print("=" * 60)
     print(f"🚀 Spectra Cloud Relay Local Server running on http://127.0.0.1:{PORT}")
     print(f"🔑 Expected Bearer Secret: {DEFAULT_SECRET}")
     print(f"📡 Sync Endpoint: http://127.0.0.1:{PORT}/sync")
     print(f"📊 Status Endpoint: http://127.0.0.1:{PORT}/status")
+    if saved_session and saved_session.get("sessionToken"):
+        print(f"💾 Persistent KV: Active session loaded from {os.path.basename(KV_FILE)}")
+    else:
+        print(f"💾 Persistent KV: Ready (backed by {os.path.basename(KV_FILE)})")
     print("=" * 60)
     try:
         server.serve_forever()

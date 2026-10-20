@@ -1,0 +1,6 @@
+name = "spectra-relay"
+main = "cloud/cloud-relay-worker.js"
+compatibility_date = "2024-10-01"
+
+[triggers]
+crons = ["*/15 * * * *"]

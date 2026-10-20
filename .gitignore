@@ -1,0 +1,11 @@
+# Local KV Store persistence file
+cloud/.kv_store.json
+
+# Node & Python caches
+node_modules/
+__pycache__/
+*.pyc
+
+# OS metadata
+.DS_Store
+Thumbs.db
